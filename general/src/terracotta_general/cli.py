@@ -31,8 +31,10 @@ def todo(name: str) -> None:
 
 @app.command()
 def serve() -> None:
-    """Run the daemon."""
-    todo("serve")
+    """Run the daemon (configured by TG_* environment variables)."""
+    from terracotta_general.daemon import main
+
+    main()
 
 
 @app.command()
