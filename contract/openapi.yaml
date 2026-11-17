@@ -1,0 +1,53 @@
+openapi: 3.0.3
+info:
+  title: terracotta-general sandbox API
+  version: "1"   # keep equal to contract/VERSION
+  description: |
+    Called by the workspace's credential helper. Caller identity is a projected
+    ServiceAccount token (audience `terracotta-general`) validated with TokenReview.
+    Draft: see openspec change ta-general.
+paths:
+  /v1/credential:
+    post:
+      summary: Credential for one git request
+      parameters:
+        - { name: X-Contract-Version, in: header, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host, path]
+              properties:
+                host: { type: string, example: github.com }
+                path: { type: string, example: owner/repo }
+                username: { type: string, description: "`writer` selects the write tier" }
+      responses:
+        "200":
+          description: Token for this request
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [username, password, expires_at]
+                properties:
+                  username: { type: string }
+                  password: { type: string }
+                  expires_at: { type: string, format: date-time }
+        "403":
+          description: Denied; `hint` names the operator command to run
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hint]
+                properties:
+                  hint: { type: string, example: "terracotta-general grant write owner/repo" }
+        "426":
+          description: Caller's contract version is below the broker's minimum
+  /v1/status:
+    get:
+      summary: Grants visible to this caller
+      responses:
+        "200": { description: OK }
