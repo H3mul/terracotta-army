@@ -1,0 +1,198 @@
+"""Container-level scenarios (ta-repo-layout 3.2, minus write until ta-general section 3).
+
+Run: uv run --project general pytest tests/integration -v   (needs docker; builds the images)
+"""
+
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import uuid
+
+import pytest
+
+HERE = pathlib.Path(__file__).parent
+sys.path.insert(0, str(HERE.parents[1] / "general" / "tests"))
+from fake_github import new_keypair  # noqa: E402
+
+pytestmark = pytest.mark.skipif(not shutil.which("docker"), reason="docker not available")
+
+POLICY = """
+read:
+  standing: {allow: ["octo/mine"], deny: ["octo/secret"]}
+  adhoc: {allow: ["octo/*"], max_ttl: 1h}
+"""
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+@pytest.fixture(scope="module")
+def env(tmp_path_factory):
+    d = tmp_path_factory.mktemp("it")
+    priv, pub = new_keypair()
+    (d / "reader.pem").write_text(priv)
+    (d / "reader.pub").write_text(pub)
+    (d / "policy.yaml").write_text(POLICY)
+    (d / "broker-token").write_text("broker-token")
+    run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(d / "operator_key")], check=True)
+    shutil.copy(d / "operator_key.pub", d / "authorized_keys")
+    e = {**os.environ, "TG_IT_DIR": str(d), "COMPOSE_PROJECT_NAME": f"tg-it-{uuid.uuid4().hex[:6]}"}
+    compose = ["docker", "compose", "-f", str(HERE / "compose.yaml")]
+    up = run([*compose, "up", "-d", "--build", "--wait", "--wait-timeout", "120"], env=e)
+    if up.returncode:
+        pytest.fail(up.stderr[-2000:])
+    import time
+    time.sleep(3)  # sshd has no healthcheck
+    yield compose, e, d
+    run([*compose, "down", "-v", "--rmi", "local"], env=e)
+
+
+class Harness:
+    def __init__(self, compose, e):
+        self.compose, self.e = compose, e
+
+    def exec(self, svc, *args):
+        return run([*self.compose, "exec", "-T", svc, *args], env=self.e)
+
+    def op(self, *args):
+        """An operator command over SSH, as from the phone."""
+        r = self.exec("operator", "ssh", "-i", "/key", "-o", "StrictHostKeyChecking=no",
+                      "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+                      "-p", "2222", "tg@sshd", *args)
+        return r.returncode, r.stdout + r.stderr
+
+    def cred(self, repo, token="sandbox-token", contract="1", username=""):
+        body = json.dumps({"host": "github.com", "path": f"{repo}.git", "username": username})
+        r = self.exec("sandbox", "curl", "-s", "-w", "\n%{http_code}", "-X", "POST",
+                      "-H", f"Authorization: Bearer {token}", "-H", f"X-Contract-Version: {contract}",
+                      "-d", body, "http://broker:8080/v1/credential")
+        text, _, code = r.stdout.rpartition("\n")
+        return int(code), json.loads(text) if text else {}
+
+    def state(self):
+        r = self.exec("sandbox", "curl", "-s", "http://stub:8000/_state")
+        return json.loads(r.stdout)
+
+
+@pytest.fixture(scope="module")
+def h(env):
+    return Harness(env[0], env[1])
+
+
+def test_01_nothing_is_served_before_the_policy_is_approved(h):
+    code, body = h.cred("octo/mine")
+    assert code == 403 and "not readable" in body["hint"]
+    rc, out = h.op("policy", "show")
+    assert rc == 0 and "+ read.standing.allow: octo/mine" in out
+    digest = out.split("policy approve ")[1].split()[0]
+    rc, out = h.op("policy", "approve", digest)
+    assert rc == 0 and "is active" in out
+
+
+def test_02_standing_read_is_served_with_a_narrow_token(h):
+    import time
+    for _ in range(20):  # the refresh runs in the background right after approval
+        code, body = h.cred("octo/mine")
+        if code == 200:
+            break
+        time.sleep(0.5)
+    assert code == 200 and body["username"] == "x-access-token" and body["password"].startswith("ghs_")
+    narrow = [t for t in h.state()["tokens"] if t["repos"] == ["mine"] and not t["revoked"]]
+    assert narrow and narrow[0]["perms"] == {"contents": "read", "metadata": "read"}
+
+
+def test_03_unlisted_and_denied_repos_get_hints_not_tokens(h):
+    code, body = h.cred("octo/other")
+    assert code == 403 and "terracotta-general grant read octo/other" in body["hint"]
+    code, body = h.cred("octo/secret")
+    assert code == 403 and "denied by pattern" in body["hint"] and "password" not in body
+
+
+def test_04_sandbox_identity_and_contract_are_enforced(h):
+    assert h.cred("octo/mine", token="intruder-token")[0] == 403
+    assert h.cred("octo/mine", token="nonsense")[0] == 401
+    assert h.cred("octo/mine", contract="0")[0] == 426
+
+
+def test_05_writer_username_is_not_served_yet(h):
+    code, body = h.cred("octo/mine", username="writer")
+    assert code == 403 and "write refused" in body["hint"]
+
+
+def test_06_adhoc_grant_serves_then_revoke_kills_the_token(h):
+    rc, out = h.op("grant", "read", "octo/other", "10m")
+    assert rc == 0 and "granted read on octo/other for 10m" in out
+    code, body = h.cred("octo/other")
+    assert code == 200
+    live = h.state()["live"]
+    rc, out = h.op("revoke", "octo/other")
+    assert rc == 0 and "revoked 1" in out
+    assert h.cred("octo/other")[0] == 403
+    assert h.state()["live"] == live - 1  # revoked at GitHub, not just forgotten
+
+
+def test_07_grant_refusals_over_ssh(h):
+    assert h.op("grant", "read", "octo/secret")[0] != 0
+    assert h.op("grant", "read", "stranger/x")[0] != 0
+
+
+def test_08_check_reports_branch_protection(h):
+    h.exec("sandbox", "curl", "-s", "-X", "POST", "-d", '["octo/mine"]', "http://stub:8000/_protect")
+    rc, out = h.op("check", "octo/mine")
+    assert rc == 0 and "main is protected" in out
+    assert "main is NOT protected" in h.op("check", "octo/other")[1]
+
+
+def test_09_operator_ssh_runs_only_the_forced_command(h):
+    rc, out = h.op("id")
+    assert rc != 0 and "uid=" not in out
+    rc, out = h.op("status; id")
+    assert "uid=" not in out
+
+
+def test_10_sandbox_has_no_path_to_admin_surface(h):
+    assert h.exec("sandbox", "ls", "/run/terracotta").returncode != 0
+    r = h.exec("sandbox", "curl", "-s", "-m", "3", "http://broker:8080/admin/status")
+    assert r.stdout.strip() in ("", '{"error"') or "grants" not in r.stdout  # not served on TCP
+    assert h.exec("sandbox", "curl", "-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}",
+                  "http://broker:8080/admin/status").stdout == "404"
+
+
+def test_11_emergency_stop_and_resume(h):
+    rc, out = h.op("stop")
+    assert rc == 0 and "suspended 1 installation" in out
+    assert h.state()["suspended"] == [1] and h.state()["live"] == 0
+    assert h.cred("octo/mine")[0] == 503
+    assert "EMERGENCY STOP" in h.op("status")[1]
+    rc, out = h.op("resume")
+    assert rc == 0 and h.state()["suspended"] == []
+    import time
+    for _ in range(20):
+        if h.cred("octo/mine")[0] == 200:
+            break
+        time.sleep(0.5)
+    else:
+        pytest.fail("standing read did not come back after resume")
+
+
+def test_12_stop_survives_a_broker_restart(h, env):
+    compose, e, _ = env
+    h.op("stop")
+    run([*compose, "restart", "broker"], env=e)
+    import time
+    time.sleep(3)
+    assert h.cred("octo/mine")[0] == 503  # the flag is persisted in the state volume
+    h.op("resume")
+
+
+def test_13_audit_chain_verifies_and_holds_no_credentials(h):
+    r = h.exec("broker", "terracotta-general", "log", "--verify")
+    assert r.returncode == 0 and "chain ok" in r.stdout, r.stdout + r.stderr
+    log = h.exec("broker", "cat", "/var/lib/terracotta/audit.log").stdout
+    assert "ghs_" not in log and "sandbox-token" not in log
+    events = {json.loads(line)["event"] for line in log.splitlines()}
+    assert {"grant", "revoke", "served", "denied", "refused", "stop", "resume", "policy"} <= events

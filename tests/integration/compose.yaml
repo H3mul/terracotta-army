@@ -1,0 +1,56 @@
+# Container-level integration harness: the real broker image, its operator sshd, and a sandbox-side
+# client, against a stub GitHub and TokenReview. No Kubernetes. Driven by test_compose.py, which
+# supplies TG_IT_DIR (keys, policy) and a unique project name. Build context is the repo root.
+name: ${COMPOSE_PROJECT_NAME:-tg-it}
+
+x-broker-env: &broker-env
+  TG_POLICY: /etc/terracotta/policy.yaml
+  TG_SANDBOX_IDENTITY: system:serviceaccount:ws:sandbox
+  TG_READER_CLIENT_ID: Iv-it
+  TG_READER_KEY: /etc/terracotta/reader.pem
+  TG_GITHUB_API: http://stub:8000
+  TG_KUBE_API: http://stub:8000
+  TG_KUBE_TOKEN: /etc/terracotta/broker-token
+  TG_LISTEN_PORT: "8080"
+  TG_AUDIT_FILE: /var/lib/terracotta/audit.log
+
+services:
+  stub:
+    build: {context: ../.., dockerfile: tests/integration/stub/Dockerfile}
+    environment: {PUBKEY: /keys/reader.pub, CLIENT_ID: Iv-it}
+    volumes: ["${TG_IT_DIR}:/keys:ro"]
+
+  broker:
+    build: {context: ../.., dockerfile: general/Dockerfile}
+    environment: *broker-env
+    volumes:
+      - ${TG_IT_DIR}/policy.yaml:/etc/terracotta/policy.yaml:ro
+      - ${TG_IT_DIR}/reader.pem:/etc/terracotta/reader.pem:ro
+      - ${TG_IT_DIR}/broker-token:/etc/terracotta/broker-token:ro
+      - admin:/run/terracotta
+      - state:/var/lib/terracotta
+    depends_on: [stub]
+
+  sshd:
+    image: tg-it-broker
+    build: {context: ../.., dockerfile: general/Dockerfile}
+    entrypoint: ["tg-sshd"]
+    environment: {TG_AUDIT_FILE: /var/lib/terracotta/audit.log}
+    volumes:
+      - ${TG_IT_DIR}/authorized_keys:/etc/terracotta/authorized_keys:ro
+      - admin:/run/terracotta
+      - state:/var/lib/terracotta
+      - sshkeys:/var/lib/terracotta-ssh
+
+  # The operator's phone: an ssh client with the authorized key.
+  operator:
+    image: tg-it-broker
+    entrypoint: ["sleep", "infinity"]
+    volumes: ["${TG_IT_DIR}/operator_key:/key:ro"]
+
+  # The sandbox: can reach the broker's TCP API only; has no admin socket and no key.
+  sandbox:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["sleep", "infinity"]
+
+volumes: {admin: {}, state: {}, sshkeys: {}}
