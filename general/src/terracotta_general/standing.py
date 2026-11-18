@@ -18,8 +18,9 @@ REFRESH_BEFORE = 600  # seconds before expiry
 
 class StandingRead:
     def __init__(self, app: App, policy: Callable[[], Policy], audit: AuditLog,
-                 clock: Callable[[], float] = time.time):
-        self._app, self._policy, self._audit, self._clock = app, policy, audit, clock
+                 clock: Callable[[], float] = time.time,
+                 paused: Callable[[], bool] = lambda: False):
+        self._app, self._policy, self._audit, self._clock, self._paused = app, policy, audit, clock, paused
         self._by_repo: dict[str, Token] = {}
 
     def token_for(self, repo: str) -> Token | None:
@@ -62,8 +63,17 @@ class StandingRead:
             if all(t is not n for n in new.values()):
                 await self._app.revoke(t)
 
+    async def drop_all(self) -> None:
+        """Revoke and forget every standing token (emergency stop)."""
+        old, self._by_repo = {id(t): t for t in self._by_repo.values()}, {}
+        for t in old.values():
+            await self._app.revoke(t)
+
     async def run(self, retry: float = 60.0) -> None:
         while True:
+            if self._paused():
+                await asyncio.sleep(retry)
+                continue
             try:
                 await self.refresh()
                 delay = max(30.0, self.next_refresh_in())

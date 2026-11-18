@@ -40,9 +40,10 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
         audit=audit,
         auth=auth or TokenReview(settings.audience),
         sandbox_identity=settings.sandbox_identity,
-        standing=StandingRead(app, active, audit),
+        standing=StandingRead(app, active, audit, paused=lambda: life.stopped),
         grants=Grants(app, store, active, audit),
         life=life,
+        app=app,
     )
 
 

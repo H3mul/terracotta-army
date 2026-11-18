@@ -1,6 +1,7 @@
 import asyncio
 import io
 
+import httpx
 import pytest
 from fake_github import FakeGitHub, new_keypair
 from starlette.testclient import TestClient
@@ -99,3 +100,33 @@ def test_invalid_proposal_is_reported_not_applied(rig):
     prop.write_text("read: {nonsense: 1}")
     out = c.get("/admin/policy").json()
     assert out["proposed"] is None and out["error"]
+
+
+def test_stop_kills_tokens_blocks_serving_and_survives_restart(rig, tmp_path):
+    from terracotta_general.credential import serve_credential
+    b, _, fake, c = rig
+    b.auth = None
+    b.app = b.standing._app
+    asyncio.run(b.grants.grant_read("octo/other", "1h", "t"))
+    out = c.post("/admin/stop").json()
+    assert out == {"revoked": 1, "suspended": 1, "errors": []}
+    assert fake.suspended == {1} and not b.standing.repos() and not b.store.active()
+    assert all(v["revoked"] or v["inst"] in fake.suspended for v in fake.tokens.values())
+    assert asyncio.run(serve_credential(b, "github.com", "octo/mine", "", "sa"))[0] == 503
+    assert c.post("/admin/grant", json={"repo": "octo/third", "level": "read"}).status_code == 409
+    assert c.get("/admin/status").json()["stopped"] is True
+    assert Lifecycle(str(tmp_path / "s.json"), str(tmp_path / "p.yaml")).stopped  # persisted
+    assert c.post("/admin/stop").json()["errors"] == []  # repeatable
+
+    assert c.post("/admin/resume").status_code == 200
+    assert not fake.suspended and b.standing.token_for("octo/mine")
+    assert asyncio.run(serve_credential(b, "github.com", "octo/mine", "", "sa"))[0] == 200
+
+
+def test_failed_resume_stays_stopped(rig):
+    b, _, _, c = rig
+    b.app = b.standing._app
+    c.post("/admin/stop")
+    b.app._http = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(500)))
+    r = c.post("/admin/resume")
+    assert r.status_code == 502 and b.life.stopped

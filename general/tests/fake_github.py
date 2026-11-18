@@ -30,6 +30,7 @@ class FakeGitHub:
         self.pub, self.inst, self.clock = public_key, installations, clock
         self.tokens: dict[str, dict] = {}  # token -> {inst, repos, perms, revoked}
         self.broaden = False
+        self.suspended: set[int] = set()
         self.calls: list[str] = []
         self.client_id = "Iv-test"
 
@@ -46,7 +47,7 @@ class FakeGitHub:
 
     def _bearer(self, req) -> dict | None:
         t = self.tokens.get(req.headers["authorization"].split(" ", 1)[1])
-        return t if t and not t["revoked"] else None
+        return t if t and not t["revoked"] and t["inst"] not in self.suspended else None
 
     def handle(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
@@ -63,6 +64,12 @@ class FakeGitHub:
                 if login.lower() == m[1].lower() and m[2] in repos:
                     return httpx.Response(200, json={"id": i})
             return httpx.Response(404)
+        m = re.fullmatch(r"/app/installations/(\d+)/suspended", path)
+        if m:
+            if not self._app(req) or int(m[1]) not in self.inst:
+                return httpx.Response(401)
+            (self.suspended.add if req.method == "PUT" else self.suspended.discard)(int(m[1]))
+            return httpx.Response(204)
         m = re.fullmatch(r"/app/installations/(\d+)/access_tokens", path)
         if m:
             if not self._app(req):
@@ -70,6 +77,8 @@ class FakeGitHub:
             iid = int(m[1])
             if iid not in self.inst:
                 return httpx.Response(404)
+            if iid in self.suspended:
+                return httpx.Response(403)
             body = json.loads(req.content)
             all_repos = self.inst[iid][1]
             repos = body.get("repositories")

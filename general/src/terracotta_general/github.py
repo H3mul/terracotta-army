@@ -114,6 +114,13 @@ class App:
                 return names
             page += 1
 
+    async def set_suspended(self, installation_id: int, suspended: bool) -> None:
+        """Suspending an installation makes GitHub reject its tokens and refuse new ones."""
+        r = await self._call("PUT" if suspended else "DELETE",
+                             f"/app/installations/{installation_id}/suspended", self._app_jwt())
+        if r.status_code != 204:
+            raise GitHubError("github-refused")
+
     async def revoke(self, token: Token) -> None:
         await self._call("DELETE", "/installation/token", token.value)
 

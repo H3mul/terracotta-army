@@ -77,6 +77,7 @@ def admin_app(b: Broker) -> Starlette:
     async def status(_: Request) -> JSONResponse:
         return JSONResponse({
             "contract": CONTRACT_VERSION,
+            "stopped": bool(b.life and b.life.stopped),
             "standing": b.standing.repos() if b.standing else [],
             "grants": [
                 {"id": r.id, "repo": r.repo, "level": r.level, "ends": r.grant_ends}
@@ -98,6 +99,8 @@ def admin_app(b: Broker) -> Starlette:
 
     async def grant(request: Request) -> JSONResponse:
         d = await request.json()
+        if b.life and b.life.stopped:
+            return JSONResponse({"error": "emergency stop is active; run resume first"}, status_code=409)
         if d.get("level") != "read" or b.grants is None:
             return JSONResponse({"error": "only read grants are available yet"}, status_code=501)
         try:
@@ -143,8 +146,41 @@ def admin_app(b: Broker) -> Starlette:
                 b.audit.write("refused", level="standing", reason=str(e))
         return JSONResponse({"active": digest(pol), "revoked": revoked})
 
+    async def stop(_: Request) -> JSONResponse:
+        """Flag first so nothing more is served even if a later step fails; safe to repeat."""
+        b.life.set_stopped(True)
+        b.audit.write("stop", caller="operator")
+        errors, revoked, suspended = [], 0, 0
+        try:
+            revoked = await b.grants.revoke_all() if b.grants else 0
+            if b.standing:
+                await b.standing.drop_all()
+            for inst in await b.app.installations():
+                await b.app.set_suspended(inst.id, True)
+                suspended += 1
+        except GitHubError as e:
+            errors.append(str(e))
+        return JSONResponse({"revoked": revoked, "suspended": suspended, "errors": errors})
+
+    async def resume(_: Request) -> JSONResponse:
+        try:
+            for inst in await b.app.installations():
+                await b.app.set_suspended(inst.id, False)
+        except GitHubError as e:  # stay stopped: serving on half-suspended installations is worse
+            return JSONResponse({"error": f"{e}; still stopped, try again"}, status_code=502)
+        b.life.set_stopped(False)
+        b.audit.write("resume", caller="operator")
+        if b.standing:
+            try:
+                await b.standing.refresh()
+            except GitHubError as e:
+                b.audit.write("refused", level="standing", reason=str(e))
+        return JSONResponse({"stopped": False})
+
     return Starlette(routes=[
         Route("/admin/status", status),
+        Route("/admin/stop", stop, methods=["POST"]),
+        Route("/admin/resume", resume, methods=["POST"]),
         Route("/admin/policy", policy_show),
         Route("/admin/policy/approve", policy_approve, methods=["POST"]),
         Route("/admin/check", check),

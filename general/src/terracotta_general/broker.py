@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from terracotta_general.audit import AuditLog
 from terracotta_general.auth import Authenticator
+from terracotta_general.github import App
 from terracotta_general.grants import Grants
 from terracotta_general.lifecycle import Lifecycle
 from terracotta_general.policy import Policy
@@ -24,3 +25,4 @@ class Broker:
     standing: StandingRead | None = None
     grants: Grants | None = None
     life: Lifecycle | None = None
+    app: App | None = None  # the reader App, for suspending installations

@@ -16,6 +16,9 @@ def _split(path: str) -> str:
 
 async def serve_credential(b: Broker, host: str, path: str, username: str, caller: str) -> tuple[int, dict]:
     """Returns (http status, json body). Denials carry a `hint` naming the operator command."""
+    if b.life and b.life.stopped:
+        b.audit.write("denied", caller=caller, reason="emergency stop")
+        return 503, {"hint": "emergency stop is active; the operator must run `terracotta-general resume`"}
     if host != "github.com":
         return 403, {"hint": f"host {host!r} is not served"}
     try:

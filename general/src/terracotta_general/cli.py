@@ -67,6 +67,8 @@ def serve() -> None:
 def status() -> None:
     """Active grants and the standing read set."""
     out = call("GET", "/admin/status")
+    if out["stopped"]:
+        typer.echo("EMERGENCY STOP ACTIVE (terracotta-general resume to lift)")
     typer.echo(f"standing read: {len(out['standing'])} repos")
     for r in out["standing"]:
         typer.echo(f"  {r}")
@@ -171,13 +173,18 @@ def policy_approve(digest: str) -> None:
 @app.command()
 def stop() -> None:
     """Emergency stop: revoke everything, suspend installations."""
-    todo("stop")
+    out = call("POST", "/admin/stop")
+    typer.echo(f"stopped: revoked {out['revoked']} grant(s), suspended {out['suspended']} installation(s)")
+    if out["errors"]:
+        typer.echo(f"INCOMPLETE ({', '.join(out['errors'])}): serving is blocked here, run stop again", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()
 def resume() -> None:
     """Lift the emergency stop."""
-    todo("resume")
+    call("POST", "/admin/resume")
+    typer.echo("resumed: installations unsuspended, standing read refreshing")
 
 
 @app.command("ssh-shell", hidden=True)
