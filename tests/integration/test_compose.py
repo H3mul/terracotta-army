@@ -69,6 +69,13 @@ class Harness:
                       "-p", "2222", "tg@sshd", *args)
         return r.returncode, r.stdout + r.stderr
 
+    def ws_ssh(self, *args):
+        """An SSH session into the workspace as the agent user, as from the phone."""
+        r = self.exec("operator", "ssh", "-i", "/key", "-o", "StrictHostKeyChecking=no",
+                      "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+                      "-p", "2222", "agent@sandbox", *args)
+        return r.returncode, r.stdout + r.stderr
+
     def cred(self, repo, token="sandbox-token", contract="1", username=""):
         body = json.dumps({"host": "github.com", "path": f"{repo}.git", "username": username})
         r = self.exec("sandbox", "curl", "-s", "-w", "\n%{http_code}", "-X", "POST",
@@ -239,3 +246,65 @@ def test_13_audit_chain_verifies_and_holds_no_credentials(h):
     assert "ghs_" not in log and "sandbox-token" not in log
     events = {json.loads(line)["event"] for line in log.splitlines()}
     assert {"grant", "revoke", "served", "denied", "refused", "stop", "resume", "policy"} <= events
+
+
+def wait_for(fn, what, tries=40):
+    import time
+    for _ in range(tries):
+        if fn():
+            return
+        time.sleep(0.5)
+    pytest.fail(f"timed out waiting for {what}")
+
+
+def test_14_ssh_session_has_git_helper_and_broker_settings(h):
+    wait_for(lambda: h.ws_ssh("true")[0] == 0, "workspace sshd")
+    rc, out = h.ws_ssh("ws clone octo/mine via-ssh && cat /workspace/dev/via-ssh/README.md")
+    assert rc == 0 and "octo/mine" in out, out  # TG_BROKER etc. reached the SSH session
+    rc, out = h.ws_ssh("ws clone octo/secret nope")
+    assert rc != 0 and "denied by pattern" in out
+
+
+def test_15_workspace_is_unprivileged(h):
+    assert h.ws_ssh("id -u")[1].strip() == "1000"
+    assert h.ws_ssh("sudo -n true")[0] != 0
+    assert h.ws_ssh("touch /etc/x")[0] != 0
+    assert h.ws_ssh("apt-get install -y cowsay")[0] != 0
+    assert h.ws_ssh("ls /var/run/secrets/terracotta/token /run/terracotta")[0] != 0  # no broker admin
+
+
+def test_16_only_authorized_keys_log_in(h):
+    r = h.exec("operator", "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", "/tmp/other")
+    assert r.returncode == 0
+    r = h.exec("operator", "ssh", "-i", "/tmp/other", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
+               "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-p", "2222", "agent@sandbox", "true")
+    assert r.returncode != 0
+    r = h.exec("operator", "ssh", "-i", "/key", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
+               "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-p", "2222", "root@sandbox", "true")
+    assert r.returncode != 0
+
+
+def test_17_supervisor_restarts_a_killed_sshd_and_reports_health(h):
+    assert h.exec("sandbox", "ws-supervisor", "--health").returncode == 0
+    assert h.exec("sandbox", "sh", "-c", "kill $(cat /tmp/sshd.pid)").returncode == 0
+    wait_for(lambda: h.ws_ssh("true")[0] == 0, "sshd to come back")
+    assert h.exec("sandbox", "ws-supervisor", "--health").returncode == 0
+
+
+def test_18_host_key_and_home_survive_a_restart(h, env):
+    compose, e, _ = env
+    scan = lambda: h.exec("operator", "ssh-keyscan", "-p", "2222", "-t", "ed25519", "sandbox").stdout.split()[-1]  # noqa: E731
+    wait_for(lambda: scan().startswith("AAAA"), "host key")
+    before = scan()
+    h.ws_ssh("echo kept > /home/agent/marker")
+    run([*compose, "restart", "sandbox"], env=e)
+    wait_for(lambda: h.ws_ssh("true")[0] == 0, "sshd after restart")
+    assert scan() == before  # same host identity: the operator's known_hosts stays valid
+    assert h.ws_ssh("cat /home/agent/marker")[1].strip() == "kept"
+
+
+def test_19_refuses_to_start_without_authorized_keys(env):
+    compose, e, _ = env
+    r = run([*compose, "run", "--rm", "--no-deps", "-T", "-v", "/dev/null:/etc/terracotta-workspace/authorized_keys:ro",
+             "sandbox"], env=e, timeout=60)
+    assert r.returncode == 1 and "refusing to start" in r.stdout + r.stderr

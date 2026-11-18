@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""tini's child: runs sshd and the happier daemon, restarts them, reports health.
+
+sshd is required: if it crash-loops the supervisor exits non-zero so the pod restarts and shows
+as failed. The happier daemon is optional (it needs pairing first) and is retried forever.
+`ws-supervisor --health` is the probe: exit 0 only if the supervisor reports sshd up and port
+2222 accepts connections.
+"""
+
+import json
+import os
+import pathlib
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+STATUS = pathlib.Path(os.environ.get("WS_STATUS", "/tmp/ws-supervisor.status"))
+HOME = pathlib.Path(os.environ.get("HOME", "/home/agent"))
+SECRET_KEYS = pathlib.Path("/etc/terracotta-workspace/host-keys")
+AUTH_KEYS = pathlib.Path("/etc/terracotta-workspace/authorized_keys")
+SSHD_TEMPLATE = pathlib.Path("/etc/terracotta-workspace/sshd_config")
+PORT = 2222
+# What git and ws need inside SSH sessions (sshd does not pass the container environment).
+# Never an API key.
+PASS_TO_SESSIONS = ("TG_BROKER", "TG_TOKEN_FILE", "TG_CONTRACT_FILE", "GIT_TERMINAL_PROMPT", "WS_ROOT",
+                    "GIT_SSL_CAINFO")
+CRASH_WINDOW, CRASH_LIMIT = 60.0, 5
+
+
+def log(msg: str) -> None:
+    print(f"ws-supervisor: {msg}", flush=True)
+
+
+def host_key() -> pathlib.Path:
+    """A read-only Secret mounted by the operator wins; otherwise a key on the home volume."""
+    if (SECRET_KEYS / "ssh_host_ed25519_key").exists():
+        return SECRET_KEYS / "ssh_host_ed25519_key"
+    d = HOME / ".ssh-host"
+    d.mkdir(mode=0o700, exist_ok=True)
+    key = d / "ssh_host_ed25519_key"
+    if not key.exists():
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+        log("generated a new SSH host key on the home volume")
+    return key
+
+
+def render_sshd_config(key: pathlib.Path, out: pathlib.Path = pathlib.Path("/tmp/sshd_config")) -> pathlib.Path:
+    env = " ".join(f"{k}={os.environ[k]}" for k in PASS_TO_SESSIONS if k in os.environ)
+    out.write_text(SSHD_TEMPLATE.read_text() + f"HostKey {key}\n" + (f"SetEnv {env}\n" if env else ""))
+    return out
+
+
+def happier_paired() -> bool:
+    d = HOME / ".happier"
+    return d.is_dir() and any(d.iterdir())
+
+
+class Service:
+    def __init__(self, name: str, argv: list[str], required: bool):
+        self.name, self.argv, self.required = name, argv, required
+        self.proc: subprocess.Popen | None = None
+        self.exits: list[float] = []
+        self.next_start = 0.0
+
+    def up(self) -> bool:
+        return bool(self.proc and self.proc.poll() is None)
+
+    def tick(self, now: float) -> None:
+        if self.proc and self.proc.poll() is not None:
+            log(f"{self.name} exited with {self.proc.returncode}")
+            self.proc = None
+            self.exits = [t for t in self.exits if now - t < CRASH_WINDOW] + [now]
+            if self.required and len(self.exits) >= CRASH_LIMIT:
+                log(f"{self.name} is crash-looping; giving up so the pod restarts")
+                raise SystemExit(1)
+            self.next_start = now + min(30.0, 2.0 ** len(self.exits))
+        if not self.proc and now >= self.next_start:
+            self.proc = subprocess.Popen(self.argv)
+            log(f"started {self.name} (pid {self.proc.pid})")
+
+    def stop(self) -> None:
+        if self.up():
+            self.proc.terminate()
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+def port_open() -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", PORT), timeout=2).close()
+        return True
+    except OSError:
+        return False
+
+
+def health() -> int:
+    try:
+        st = json.loads(STATUS.read_text())
+    except (OSError, ValueError):
+        print("no status yet")
+        return 1
+    if time.time() - st["ts"] > 15 or not st["sshd"] or not port_open():
+        print(f"unhealthy: {st}")
+        return 1
+    print("ok")
+    return 0
+
+
+def main() -> int:
+    if "--health" in sys.argv:
+        return health()
+    if not AUTH_KEYS.is_file() or not AUTH_KEYS.read_text().strip():
+        log(f"no authorized keys at {AUTH_KEYS}: nobody could log in, refusing to start")
+        return 1
+    key = host_key()
+    cfg = render_sshd_config(key)
+    fp = subprocess.run(["ssh-keygen", "-lf", f"{key}.pub"], capture_output=True, text=True, check=False)
+    log("host key " + fp.stdout.strip())
+    sshd = Service("sshd", ["/usr/sbin/sshd", "-D", "-e", "-f", str(cfg)], required=True)
+    happier = Service("happier", ["happier", "daemon", "start-sync"], required=False)
+    services = [sshd]
+    stopping: list[int] = []
+    signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
+    signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
+    try:
+        while not stopping:
+            now = time.time()
+            if happier not in services and happier_paired():
+                services.append(happier)
+            for s in services:
+                s.tick(now)
+            STATUS.write_text(json.dumps({"ts": now, "sshd": sshd.up(), "happier": happier.up()}))
+            time.sleep(1)
+    finally:
+        for s in services:
+            s.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

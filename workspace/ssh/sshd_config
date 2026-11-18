@@ -1,0 +1,17 @@
+# Template for /tmp/sshd_config, rendered by ws-supervisor (HostKey and SetEnv lines are appended).
+# sshd runs as the unprivileged `agent` user on a high port: no root, no PAM, no sudo.
+Port 2222
+PidFile /tmp/sshd.pid
+AuthorizedKeysFile /etc/terracotta-workspace/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+AllowUsers agent
+PermitRootLogin no
+PermitUserEnvironment no
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding local
+PrintMotd no
+LogLevel INFO

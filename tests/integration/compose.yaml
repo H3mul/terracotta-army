@@ -49,11 +49,11 @@ services:
     entrypoint: ["sleep", "infinity"]
     volumes: ["${TG_IT_DIR}/operator_key:/key:ro"]
 
-  # The workspace: the real workspace image (git helper, ws) as the unprivileged agent. It can
-  # reach the broker's TCP API only; it has no admin socket and no key, just its identity token.
+  # The workspace: the real workspace image (supervisor, sshd, git helper, ws) as the unprivileged
+  # agent. It can reach the broker's TCP API only; it has no admin socket and no key, just its
+  # identity token. The operator reaches its sshd with the same key used for the broker.
   sandbox:
     build: {context: ../.., dockerfile: workspace/Dockerfile}
-    entrypoint: ["sleep", "infinity"]
     environment:
       TG_BROKER: http://broker:8080
       TG_TOKEN_FILE: /run/identity/token
@@ -61,5 +61,7 @@ services:
     volumes:
       - ${TG_IT_DIR}/sandbox-token:/run/identity/token:ro
       - ${TG_IT_DIR}/tls.crt:/keys/tls.crt:ro
+      - ${TG_IT_DIR}/authorized_keys:/etc/terracotta-workspace/authorized_keys:ro
+      - home:/home/agent
 
-volumes: {admin: {}, state: {}, sshkeys: {}}
+volumes: {admin: {}, state: {}, sshkeys: {}, home: {}}
