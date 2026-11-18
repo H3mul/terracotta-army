@@ -18,13 +18,13 @@ from terracotta_general.broker import Broker
 from terracotta_general.config import Settings
 from terracotta_general.github import App
 from terracotta_general.grants import Grants
-from terracotta_general.policy import Policy
+from terracotta_general.lifecycle import Lifecycle
 from terracotta_general.requests import RequestStore
 from terracotta_general.standing import StandingRead
 
 
 def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | None = None) -> Broker:
-    policy = Policy.load(pathlib.Path(settings.policy_path).read_text())
+    life = Lifecycle(settings.state_path, settings.policy_path)
     if sinks is None:
         sinks = [sys.stdout]
         if settings.audit_file:
@@ -33,7 +33,7 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
     store = RequestStore()
     app = App(settings.reader_client_id, pathlib.Path(settings.reader_key_path).read_text(),
               http or httpx.AsyncClient(timeout=10.0))
-    active = lambda: policy
+    active = life.policy
     return Broker(
         policy=active,
         store=store,
@@ -42,6 +42,7 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
         sandbox_identity=settings.sandbox_identity,
         standing=StandingRead(app, active, audit),
         grants=Grants(app, store, active, audit),
+        life=life,
     )
 
 

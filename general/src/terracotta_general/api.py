@@ -13,6 +13,7 @@ from terracotta_general import CONTRACT_VERSION
 from terracotta_general.broker import Broker
 from terracotta_general.credential import serve_credential
 from terracotta_general.github import GitHubError
+from terracotta_general.lifecycle import describe_changes, digest
 from terracotta_general.requests import TransitionError
 
 MIN_CONTRACT = CONTRACT_VERSION  # callers older than this get 426
@@ -115,8 +116,37 @@ def admin_app(b: Broker) -> Starlette:
             return JSONResponse({"revoked": 0})
         return JSONResponse({"revoked": await b.grants.revoke(d["repo"], d.get("level") or None)})
 
+    async def policy_show(_: Request) -> JSONResponse:
+        proposed, why = b.life.proposal()
+        return JSONResponse({
+            "active": digest(b.life.active),
+            "proposed": digest(proposed) if proposed else None,
+            "error": why,
+            "changes": describe_changes(b.life.active, proposed) if proposed else [],
+        })
+
+    async def policy_approve(request: Request) -> JSONResponse:
+        want = (await request.json()).get("hash", "")
+        try:
+            pol = b.life.approve(want)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        b.audit.write("policy", caller="operator", reason=f"approved {digest(pol)}")
+        revoked = 0
+        for r in b.store.active():  # grants the new policy forbids die now
+            if not pol.decide(r.repo, r.level).allowed and b.grants:
+                revoked += await b.grants.revoke(r.repo, r.level)
+        if b.standing:
+            try:
+                await b.standing.refresh()
+            except GitHubError as e:
+                b.audit.write("refused", level="standing", reason=str(e))
+        return JSONResponse({"active": digest(pol), "revoked": revoked})
+
     return Starlette(routes=[
         Route("/admin/status", status),
+        Route("/admin/policy", policy_show),
+        Route("/admin/policy/approve", policy_approve, methods=["POST"]),
         Route("/admin/check", check),
         Route("/admin/grant", grant, methods=["POST"]),
         Route("/admin/revoke", revoke, methods=["POST"]),

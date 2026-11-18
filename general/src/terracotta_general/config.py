@@ -15,6 +15,7 @@ class Settings:
     listen_host: str = "0.0.0.0"
     listen_port: int = 8080
     audit_file: str | None = None
+    state_path: str = "/var/lib/terracotta/state.json"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
@@ -31,4 +32,5 @@ class Settings:
             listen_host=env.get("TG_LISTEN_HOST", cls.listen_host),
             listen_port=int(env.get("TG_LISTEN_PORT", cls.listen_port)),
             audit_file=env.get("TG_AUDIT_FILE") or None,
+            state_path=env.get("TG_STATE", cls.state_path),
         )

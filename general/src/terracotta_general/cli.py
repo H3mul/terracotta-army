@@ -147,13 +147,25 @@ def log(
 @policy.command("show")
 def policy_show() -> None:
     """Plain-words diff of the proposed policy against the active one."""
-    todo("policy show")
+    out = call("GET", "/admin/policy")
+    typer.echo(f"active:   {out['active']}")
+    if out["error"]:
+        typer.echo(f"proposed policy is invalid: {out['error']}", err=True)
+        raise typer.Exit(1)
+    if out["proposed"] == out["active"]:
+        typer.echo("proposed: same as active, nothing to approve")
+        return
+    typer.echo(f"proposed: {out['proposed']}")
+    for line in out["changes"]:
+        typer.echo(f"  {line}")
+    typer.echo(f"\napprove with: terracotta-general policy approve {out['proposed']}")
 
 
 @policy.command("approve")
 def policy_approve(digest: str) -> None:
     """Activate the proposed policy with this hash."""
-    todo("policy approve")
+    out = call("POST", "/admin/policy/approve", json={"hash": digest})
+    typer.echo(f"policy {out['active']} is active; revoked {out['revoked']} grant(s) it forbids")
 
 
 @app.command()

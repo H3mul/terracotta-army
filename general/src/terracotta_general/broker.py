@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from terracotta_general.audit import AuditLog
 from terracotta_general.auth import Authenticator
 from terracotta_general.grants import Grants
+from terracotta_general.lifecycle import Lifecycle
 from terracotta_general.policy import Policy
 from terracotta_general.requests import RequestStore
 from terracotta_general.standing import StandingRead
@@ -22,3 +23,4 @@ class Broker:
     sandbox_identity: str  # the one ServiceAccount allowed to call the sandbox API
     standing: StandingRead | None = None
     grants: Grants | None = None
+    life: Lifecycle | None = None
