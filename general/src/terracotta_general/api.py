@@ -26,6 +26,13 @@ def _refuse(b: Broker, code: int, reason: str, caller: str = "-") -> JSONRespons
     return JSONResponse({"error": reason}, status_code=code)
 
 
+def _need[T](value: T | None, what: str) -> T:
+    """Wiring mistakes are bugs, not user errors: the daemon always builds the broker fully."""
+    if value is None:
+        raise RuntimeError(f"broker was built without {what}")
+    return value
+
+
 async def _body(request: Request) -> dict | None:
     try:
         d = await request.json()
@@ -142,9 +149,9 @@ def admin_app(b: Broker) -> Starlette:
 
     async def grant(request: Request) -> JSONResponse:
         d = await _body(request)
-        repo = _valid_repo(d.get("repo")) if d else None
-        ttl = d.get("ttl") if d else None
-        if repo is None or not (ttl is None or isinstance(ttl, str)):
+        repo = _valid_repo(d.get("repo")) if d is not None else None
+        ttl = d.get("ttl") if d is not None else None
+        if d is None or repo is None or not (ttl is None or isinstance(ttl, str)):
             return _bad("body must be JSON with repo (owner/name) and an optional string ttl")
         if b.life and b.life.stopped:
             return JSONResponse({"error": "emergency stop is active; run resume first"}, status_code=409)
@@ -173,12 +180,12 @@ def admin_app(b: Broker) -> Starlette:
         return JSONResponse({"revoked": await b.grants.revoke(repo, level or None)})
 
     async def policy_show(_: Request) -> JSONResponse:
-        proposed, why = b.life.proposal()
+        proposed, why = _need(b.life, 'lifecycle').proposal()
         return JSONResponse({
-            "active": digest(b.life.active),
+            "active": digest(_need(b.life, 'lifecycle').active),
             "proposed": digest(proposed) if proposed else None,
             "error": why,
-            "changes": describe_changes(b.life.active, proposed) if proposed else [],
+            "changes": describe_changes(_need(b.life, 'lifecycle').active, proposed) if proposed else [],
         })
 
     async def policy_approve(request: Request) -> JSONResponse:
@@ -187,7 +194,7 @@ def admin_app(b: Broker) -> Starlette:
         if not isinstance(want, str):
             return _bad("body must be JSON with a string hash")
         try:
-            pol = b.life.approve(want)
+            pol = _need(b.life, 'lifecycle').approve(want)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=409)
         b.audit.write("policy", caller="operator", reason=f"approved {digest(pol)}")
@@ -204,15 +211,16 @@ def admin_app(b: Broker) -> Starlette:
 
     async def stop(_: Request) -> JSONResponse:
         """Flag first so nothing more is served even if a later step fails; safe to repeat."""
-        b.life.set_stopped(True)
+        _need(b.life, 'lifecycle').set_stopped(True)
         b.audit.write("stop", caller="operator")
         errors, revoked, suspended = [], 0, 0
         try:
             revoked = await b.grants.revoke_all() if b.grants else 0
             if b.standing:
                 await b.standing.drop_all()
-            for inst in await b.app.installations():
-                await b.app.set_suspended(inst.id, True)
+            app = _need(b.app, 'a GitHub app')
+            for inst in await app.installations():
+                await app.set_suspended(inst.id, True)
                 suspended += 1
         except GitHubError as e:
             errors.append(str(e))
@@ -220,11 +228,12 @@ def admin_app(b: Broker) -> Starlette:
 
     async def resume(_: Request) -> JSONResponse:
         try:
-            for inst in await b.app.installations():
-                await b.app.set_suspended(inst.id, False)
+            app = _need(b.app, 'a GitHub app')
+            for inst in await app.installations():
+                await app.set_suspended(inst.id, False)
         except GitHubError as e:  # stay stopped: serving on half-suspended installations is worse
             return JSONResponse({"error": f"{e}; still stopped, try again"}, status_code=502)
-        b.life.set_stopped(False)
+        _need(b.life, 'lifecycle').set_stopped(False)
         b.audit.write("resume", caller="operator")
         if b.standing:
             try:

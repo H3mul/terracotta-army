@@ -45,7 +45,7 @@ Pick the toolchain for a project in this order, and use the first that applies:
    `ws-tool` will say so (exit code 3). Tell the user; do not install devbox or Nix yourself.
 3. **nix.** If the project has `flake.nix`, the same as devbox.
 
-Docker and other container runtimes are not available in this workspace and never will be here:
+Docker and other container runtimes are not available in this workspace:
 do not look for a socket or try to start a daemon. If a project needs containers to build or test,
 tell the user which step needs them.
 

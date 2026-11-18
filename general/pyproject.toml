@@ -17,7 +17,7 @@ dependencies = [
 terracotta-general = "terracotta_general.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "types-PyYAML"]
 
 [build-system]
 requires = ["hatchling"]
@@ -28,3 +28,8 @@ packages = ["src/terracotta_general"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true

@@ -112,6 +112,7 @@ class Policy(_Strict):
         d = self.decide(repo, level)
         if not d.allowed:
             raise PermissionError(d.reason)
+        assert d.ttl_default is not None and d.ttl_max is not None  # set for every allowed read/write
         if not requested:
-            return d.ttl_default  # type: ignore[return-value]
-        return min(parse_ttl(requested), d.ttl_max)  # type: ignore[type-var]
+            return d.ttl_default
+        return min(parse_ttl(requested), d.ttl_max)

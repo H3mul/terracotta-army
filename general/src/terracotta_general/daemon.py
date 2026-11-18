@@ -65,6 +65,7 @@ async def run(settings: Settings) -> None:
     tcp = uvicorn.Server(uvicorn.Config(
         sandbox_app(b), host=settings.listen_host, port=settings.listen_port, log_level="warning"))
     admin = uvicorn.Server(uvicorn.Config(admin_app(b), uds=str(sock), log_level="warning"))
+    assert b.standing and b.grants  # build() always wires both
     tasks = [asyncio.create_task(b.standing.run()), asyncio.create_task(b.grants.run())]
     try:
         await asyncio.gather(tcp.serve(), admin.serve())

@@ -11,7 +11,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv run --project general ruff check general workspace
-      - run: uv run --project general pytest general/tests workspace/tests
+      - run: uv run --project general --directory general mypy src
+      - run: uv run --project general pytest general/tests workspace/tests tests/hygiene
   secrets:
     runs-on: ubuntu-latest
     steps:

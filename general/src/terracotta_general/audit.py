@@ -51,7 +51,7 @@ class AuditLog:
         self._seq += 1
         body = {"seq": self._seq, "ts": int(self._clock()), **fields}
         rec = {**body, "prev": self._prev, "hash": _digest(self._prev, body)}
-        self._prev = rec["hash"]
+        self._prev = str(rec["hash"])
         line = json.dumps(rec, sort_keys=True, separators=(",", ":"))
         for s in self._sinks:
             s.write(line + "\n")
