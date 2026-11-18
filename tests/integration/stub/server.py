@@ -7,7 +7,6 @@ a live token that covers the repo, like GitHub. `/_state` exposes what the broke
 
 import asyncio
 import base64
-import json
 import os
 import pathlib
 import re

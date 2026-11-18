@@ -15,7 +15,7 @@ import pytest
 
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parents[1] / "general" / "tests"))
-from fake_github import new_keypair  # noqa: E402
+from fake_github import new_keypair
 
 pytestmark = pytest.mark.skipif(not shutil.which("docker"), reason="docker not available")
 
@@ -26,8 +26,8 @@ read:
 """
 
 
-def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+def run(cmd, check=False, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, **kw)
 
 
 @pytest.fixture(scope="module")
@@ -142,7 +142,7 @@ def test_05_writer_username_is_not_served_yet(h):
 def test_06_adhoc_grant_serves_then_revoke_kills_the_token(h):
     rc, out = h.op("grant", "read", "octo/other", "10m")
     assert rc == 0 and "granted read on octo/other for 10m" in out
-    code, body = h.cred("octo/other")
+    code, _ = h.cred("octo/other")
     assert code == 200
     live = h.state()["live"]
     rc, out = h.op("revoke", "octo/other")
@@ -294,7 +294,7 @@ def test_17_supervisor_restarts_a_killed_sshd_and_reports_health(h):
 
 def test_18_host_key_and_home_survive_a_restart(h, env):
     compose, e, _ = env
-    scan = lambda: h.exec("operator", "ssh-keyscan", "-p", "2222", "-t", "ed25519", "sandbox").stdout.split()[-1]  # noqa: E731
+    scan = lambda: h.exec("operator", "ssh-keyscan", "-p", "2222", "-t", "ed25519", "sandbox").stdout.split()[-1]
     wait_for(lambda: scan().startswith("AAAA"), "host key")
     before = scan()
     h.ws_ssh("echo kept > /home/agent/marker")
