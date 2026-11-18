@@ -1,9 +1,11 @@
 import asyncio
+import json
 
+import httpx
 import pytest
 from fake_github import FakeGitHub, new_keypair
 
-from terracotta_general.github import App, GitHubError
+from terracotta_general.github import App, GitHubError, _perms_within
 
 PRIV, PUB = new_keypair()
 
@@ -49,3 +51,35 @@ def test_revoke():
     t = run(app.installation_token(1, ["a"], {"contents": "read"}))
     run(app.revoke(t))
     assert next(iter(fake.tokens.values()))["revoked"]
+
+
+def test_too_broad_permissions_are_revoked_and_refused():
+    fake, app = make()
+    fake.broaden = True  # answer claims all repos plus administration:write
+    with pytest.raises(GitHubError, match="too-broad"):
+        run(app.installation_token(1, ["a"], {"contents": "read"}))
+    assert all(v["revoked"] for v in fake.tokens.values())
+
+
+def test_metadata_read_is_implicit_but_nothing_else_extra():
+    assert _perms_within({"contents": "read", "metadata": "read"}, {"contents": "read"})
+    assert not _perms_within({"contents": "write"}, {"contents": "read"})
+    assert not _perms_within({"issues": "read"}, {"contents": "read"})
+    assert not _perms_within({"metadata": "write"}, {"contents": "read"})
+
+
+def test_repo_set_mismatch_is_too_broad():
+    fake, app = make()
+    orig = fake.handle
+
+    def lying(req):
+        r = orig(req)
+        if req.url.path.endswith("access_tokens"):
+            ans = json.loads(r.content)
+            ans["repositories"] = [{"name": "a"}, {"name": "b"}]
+            return httpx.Response(201, json=ans)
+        return r
+
+    app._http._transport = httpx.MockTransport(lying)
+    with pytest.raises(GitHubError, match="too-broad"):
+        run(app.installation_token(1, ["a"], {"contents": "read"}))

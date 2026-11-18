@@ -89,8 +89,17 @@ class App:
         try:
             expires = _parse_ts(a["expires_at"])
             token = Token(a["token"], expires, frozenset(x["name"].lower() for x in a.get("repositories", [])))
+            granted = a.get("permissions", {})
+            selection = a.get("repository_selection")
         except (KeyError, ValueError):
             raise GitHubError("github-bad-answer") from None
+        narrow = _perms_within(granted, permissions)
+        if repositories is not None:
+            narrow = (narrow and selection == "selected"
+                      and token.repos == frozenset(r.lower() for r in repositories))
+        if not narrow:
+            await self.revoke(token)  # the token exists at GitHub whether or not we keep it
+            raise GitHubError("github-token-too-broad")
         return token
 
     async def list_repos(self, token: Token) -> list[str]:
@@ -107,6 +116,17 @@ class App:
 
     async def revoke(self, token: Token) -> None:
         await self._call("DELETE", "/installation/token", token.value)
+
+
+_RANK = {"read": 1, "write": 2, "admin": 3}
+_IMPLICIT = {"metadata": "read"}  # GitHub adds this to every installation token
+
+
+def _perms_within(granted: dict[str, str], requested: dict[str, str]) -> bool:
+    """Every granted permission was requested (or is implicit) at no higher level."""
+    allowed = {**_IMPLICIT, **requested}
+    return all(
+        k in allowed and _RANK.get(v, 99) <= _RANK.get(allowed[k], 0) for k, v in granted.items())
 
 
 def _parse_ts(s: str) -> float:
