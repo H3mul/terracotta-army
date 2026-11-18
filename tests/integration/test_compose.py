@@ -38,6 +38,10 @@ def env(tmp_path_factory):
     (d / "reader.pub").write_text(pub)
     (d / "policy.yaml").write_text(POLICY)
     (d / "broker-token").write_text("broker-token")
+    (d / "sandbox-token").write_text("sandbox-token")
+    run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=github.com",
+         "-addext", "subjectAltName=DNS:github.com", "-keyout", str(d / "tls.key"), "-out", str(d / "tls.crt")],
+        check=True)
     run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(d / "operator_key")], check=True)
     shutil.copy(d / "operator_key.pub", d / "authorized_keys")
     e = {**os.environ, "TG_IT_DIR": str(d), "COMPOSE_PROJECT_NAME": f"tg-it-{uuid.uuid4().hex[:6]}"}
@@ -72,6 +76,10 @@ class Harness:
                       "-d", body, "http://broker:8080/v1/credential")
         text, _, code = r.stdout.rpartition("\n")
         return int(code), json.loads(text) if text else {}
+
+    def sh(self, script):
+        """A shell snippet inside the workspace, as the agent user."""
+        return self.exec("sandbox", "sh", "-c", script)
 
     def state(self):
         r = self.exec("sandbox", "curl", "-s", "http://stub:8000/_state")
@@ -140,6 +148,39 @@ def test_07_grant_refusals_over_ssh(h):
     assert h.op("grant", "read", "stranger/x")[0] != 0
 
 
+def test_07a_real_git_clone_uses_the_helper_and_standing_read(h):
+    r = h.sh("ws clone octo/mine && cat /workspace/dev/mine/README.md")
+    assert r.returncode == 0 and "octo/mine" in r.stdout, r.stderr
+    r = h.sh("cd /workspace/dev/mine && git fetch origin && git ls-remote origin main")
+    assert r.returncode == 0, r.stderr
+
+
+def test_07b_clone_of_unlisted_repo_ends_in_the_operator_command_then_works_once_granted(h):
+    r = h.sh("ws clone octo/other")
+    assert r.returncode != 0 and "terracotta-general grant read octo/other" in r.stderr, r.stderr
+    assert "ghs_" not in r.stderr and "Password" not in r.stderr  # no prompt, no token
+    assert h.op("grant", "read", "octo/other", "10m")[0] == 0
+    r = h.sh("ws clone octo/other && cat /workspace/dev/other/README.md")
+    assert r.returncode == 0 and "octo/other" in r.stdout, r.stderr
+    assert h.op("revoke", "octo/other")[0] == 0
+    r = h.sh("cd /workspace/dev/other && git fetch origin")
+    assert r.returncode != 0 and "grant read octo/other" in r.stderr
+
+
+def test_07c_denied_repo_cannot_be_cloned_and_push_is_refused_with_a_hint(h):
+    r = h.sh("ws clone octo/secret")
+    assert r.returncode != 0 and "denied by pattern" in r.stderr
+    r = h.sh("cd /workspace/dev/mine && git -c user.name=a -c user.email=a@a commit -q --allow-empty -m x "
+             "&& git push origin main")
+    assert r.returncode != 0 and "write refused" in r.stderr, r.stderr
+
+
+def test_07d_no_token_is_left_on_the_workspace_disk(h):
+    r = h.sh("grep -rIl ghs_ /workspace /home/agent /tmp 2>/dev/null; true")
+    assert r.stdout.strip() == ""
+    assert "x-access-token" not in h.sh("cat /workspace/dev/mine/.git/config").stdout
+
+
 def test_08_check_reports_branch_protection(h):
     h.exec("sandbox", "curl", "-s", "-X", "POST", "-d", '["octo/mine"]', "http://stub:8000/_protect")
     rc, out = h.op("check", "octo/mine")
@@ -167,6 +208,8 @@ def test_11_emergency_stop_and_resume(h):
     assert rc == 0 and "suspended 1 installation" in out
     assert h.state()["suspended"] == [1] and h.state()["live"] == 0
     assert h.cred("octo/mine")[0] == 503
+    r = h.sh("ws clone octo/mine during-stop")
+    assert r.returncode != 0 and "emergency stop" in r.stderr
     assert "EMERGENCY STOP" in h.op("status")[1]
     rc, out = h.op("resume")
     assert rc == 0 and h.state()["suspended"] == []

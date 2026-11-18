@@ -19,6 +19,7 @@ services:
     build: {context: ../.., dockerfile: tests/integration/stub/Dockerfile}
     environment: {PUBKEY: /keys/reader.pub, CLIENT_ID: Iv-it}
     volumes: ["${TG_IT_DIR}:/keys:ro"]
+    networks: {default: {aliases: [github.com]}}  # git clients reach it as github.com over TLS
 
   broker:
     build: {context: ../.., dockerfile: general/Dockerfile}
@@ -48,9 +49,17 @@ services:
     entrypoint: ["sleep", "infinity"]
     volumes: ["${TG_IT_DIR}/operator_key:/key:ro"]
 
-  # The sandbox: can reach the broker's TCP API only; has no admin socket and no key.
+  # The workspace: the real workspace image (git helper, ws) as the unprivileged agent. It can
+  # reach the broker's TCP API only; it has no admin socket and no key, just its identity token.
   sandbox:
-    image: curlimages/curl:8.11.1
+    build: {context: ../.., dockerfile: workspace/Dockerfile}
     entrypoint: ["sleep", "infinity"]
+    environment:
+      TG_BROKER: http://broker:8080
+      TG_TOKEN_FILE: /run/identity/token
+      GIT_SSL_CAINFO: /keys/tls.crt  # trust the stub's certificate for github.com
+    volumes:
+      - ${TG_IT_DIR}/sandbox-token:/run/identity/token:ro
+      - ${TG_IT_DIR}/tls.crt:/keys/tls.crt:ro
 
 volumes: {admin: {}, state: {}, sshkeys: {}}

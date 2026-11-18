@@ -2,7 +2,7 @@
 # Pin the base by digest at release time (ta-repo-layout 4.1).
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates python3-minimal curl \
+        git ca-certificates python3 curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/bash agent \
     && mkdir -p /workspace/dev /workspace/openspec && chown -R agent /workspace
