@@ -347,3 +347,23 @@ def test_22_spec_store_is_cloned_registered_and_linked_to_projects(h):
     rc, out = h.ws_ssh("ls /home/agent/.local/share/openspec/stores/registry.yaml")  # on the home volume
     assert rc == 0
     assert h.ws_ssh("ws store clone octo/specs")[0] != 0  # will not overwrite an existing checkout
+
+
+def test_23_product_containers_run_hardened(h, env):
+    compose, e, _ = env
+    for svc in ("broker", "sshd", "sandbox"):
+        cid = run([*compose, "ps", "-q", svc], env=e).stdout.strip()
+        cfg = json.loads(run(["docker", "inspect", cid], env=e).stdout)[0]["HostConfig"]
+        assert cfg["ReadonlyRootfs"] is True and cfg["CapDrop"] == ["ALL"], svc
+        assert "no-new-privileges:true" in cfg["SecurityOpt"] and not cfg["Privileged"], svc
+    assert h.exec("sandbox", "sh", "-c", "touch /usr/x").returncode != 0  # root filesystem is read-only
+    assert h.exec("broker", "sh", "-c", "touch /app/x").returncode != 0
+
+
+def test_24_I1_no_key_material_or_broker_secret_in_the_workspace(h):
+    env_dump = h.exec("sandbox", "env").stdout
+    assert "TG_READER" not in env_dump and "PRIVATE KEY" not in env_dump and "ghs_" not in env_dump
+    r = h.sh("grep -rIl --exclude-dir=.ssh-host -e 'BEGIN [A-Z ]*PRIVATE KEY' -e ghs_ -e ghp_ /workspace /home/agent /tmp /etc/terracotta-workspace "
+             "/run /opt/tools/package.json 2>/dev/null; ls /etc/terracotta /run/terracotta 2>&1 | head -2; true")
+    assert "PRIVATE KEY" not in r.stdout and not [ln for ln in r.stdout.splitlines() if ln.startswith("/")], r.stdout
+    assert h.ws_ssh("env")[1].count("ghs_") == 0 and "reader" not in h.ws_ssh("env")[1].lower()

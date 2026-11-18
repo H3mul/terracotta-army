@@ -3,6 +3,13 @@
 # supplies TG_IT_DIR (keys, policy) and a unique project name. Build context is the repo root.
 name: ${COMPOSE_PROJECT_NAME:-tg-it}
 
+# Hardening applied to the three product containers; they must run fully under it (ta-general 5.1).
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+
 x-broker-env: &broker-env
   TG_POLICY: /etc/terracotta/policy.yaml
   TG_SANDBOX_IDENTITY: system:serviceaccount:ws:sandbox
@@ -22,6 +29,7 @@ services:
     networks: {default: {aliases: [github.com]}}  # git clients reach it as github.com over TLS
 
   broker:
+    <<: *hardened
     build: {context: ../.., dockerfile: general/Dockerfile}
     environment: *broker-env
     volumes:
@@ -33,6 +41,7 @@ services:
     depends_on: [stub]
 
   sshd:
+    <<: *hardened
     image: tg-it-broker
     build: {context: ../.., dockerfile: general/Dockerfile}
     entrypoint: ["tg-sshd"]
@@ -53,6 +62,7 @@ services:
   # agent. It can reach the broker's TCP API only; it has no admin socket and no key, just its
   # identity token. The operator reaches its sshd with the same key used for the broker.
   sandbox:
+    <<: *hardened
     build: {context: ../.., dockerfile: workspace/Dockerfile}
     environment:
       TG_BROKER: http://broker:8080
@@ -63,5 +73,6 @@ services:
       - ${TG_IT_DIR}/tls.crt:/keys/tls.crt:ro
       - ${TG_IT_DIR}/authorized_keys:/etc/terracotta-workspace/authorized_keys:ro
       - home:/home/agent
+      - workspace:/workspace
 
-volumes: {admin: {}, state: {}, sshkeys: {}, home: {}}
+volumes: {admin: {}, state: {}, sshkeys: {}, home: {}, workspace: {}}
