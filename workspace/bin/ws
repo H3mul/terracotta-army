@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""ws: workspace helper. `ws clone owner/repo [name]`, `ws status`."""
+
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+ROOT = pathlib.Path(os.environ.get("WS_ROOT", "/workspace"))
+REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$")
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+USAGE = "usage: ws clone OWNER/REPO [NAME] | ws status"
+
+
+def clone(repo: str, name: str | None) -> int:
+    if not REPO.fullmatch(repo) or ".." in repo:
+        print(f"ws: not an owner/repo: {repo!r}", file=sys.stderr)
+        return 2
+    name = name or repo.split("/", 1)[1].removesuffix(".git")
+    if not NAME.fullmatch(name):
+        print(f"ws: bad checkout name: {name!r}", file=sys.stderr)
+        return 2
+    dest = ROOT / "dev" / name
+    if dest.exists():
+        print(f"ws: {dest} already exists", file=sys.stderr)
+        return 1
+    return subprocess.run(["git", "clone", f"https://github.com/{repo}.git", str(dest)]).returncode
+
+
+def status() -> int:
+    dev = ROOT / "dev"
+    for d in sorted(p for p in dev.iterdir() if (p / ".git").exists()) if dev.is_dir() else []:
+        out = subprocess.run(["git", "-C", str(d), "status", "-sb", "--porcelain"],
+                             capture_output=True, text=True).stdout.splitlines()
+        print(f"{d.name:24} {out[0][3:] if out else '?'}{'  (modified)' if len(out) > 1 else ''}")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) >= 3 and argv[1] == "clone" and len(argv) <= 4:
+        return clone(argv[2], argv[3] if len(argv) == 4 else None)
+    if argv[1:] == ["status"]:
+        return status()
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

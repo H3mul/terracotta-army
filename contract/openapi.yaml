@@ -34,7 +34,7 @@ paths:
                 properties:
                   username: { type: string }
                   password: { type: string }
-                  expires_at: { type: string, format: date-time }
+                  expires_at: { type: integer, description: "Unix seconds, UTC (git's password_expiry_utc)" }
         "403":
           description: Denied; `hint` names the operator command to run
           content:

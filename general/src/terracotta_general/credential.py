@@ -38,7 +38,7 @@ async def serve_credential(b: Broker, host: str, path: str, username: str, calle
         token, level = await b.grants.token_for(repo), "read"
     if token is not None:
         b.audit.write("served", repo=repo, level=level, caller=caller)
-        return 200, {"username": "x-access-token", "password": token.value, "expires_at": token.expires_at}
+        return 200, {"username": "x-access-token", "password": token.value, "expires_at": int(token.expires_at)}
 
     d = b.policy().decide(repo, "read")
     hint = f"{CLI} grant read {repo}" if d.allowed else f"not readable: {d.reason}"

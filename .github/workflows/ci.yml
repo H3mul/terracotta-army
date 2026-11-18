@@ -10,8 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv run --project general ruff check general
-      - run: uv run --project general pytest general/tests
+      - run: uv run --project general ruff check general workspace
+      - run: uv run --project general pytest general/tests workspace/tests
   secrets:
     runs-on: ubuntu-latest
     steps:
@@ -31,4 +31,4 @@ jobs:
       - uses: docker/build-push-action@v6
         with: { context: ., file: general/Dockerfile, push: true, tags: "ghcr.io/${{ github.repository_owner }}/terracotta-general:${{ github.ref_name }}" }
       - uses: docker/build-push-action@v6
-        with: { context: workspace, push: true, tags: "ghcr.io/${{ github.repository_owner }}/terracotta-workspace:${{ github.ref_name }}" }
+        with: { context: ., file: workspace/Dockerfile, push: true, tags: "ghcr.io/${{ github.repository_owner }}/terracotta-workspace:${{ github.ref_name }}" }

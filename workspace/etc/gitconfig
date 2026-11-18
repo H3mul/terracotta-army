@@ -1,0 +1,12 @@
+# System gitconfig for the workspace. Reads use the broker's standing/ad hoc token; pushes are
+# rewritten to the `writer` identity so the broker issues (or refuses) the write tier.
+[credential "https://github.com"]
+	helper = terracotta
+	useHttpPath = true
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+	insteadOf = ssh://git@github.com/
+[url "https://writer@github.com/"]
+	pushInsteadOf = https://github.com/
+[init]
+	defaultBranch = main
