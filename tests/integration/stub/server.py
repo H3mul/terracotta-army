@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 fake = FakeGitHub(pathlib.Path(os.environ["PUBKEY"]).read_text(),
-                  {1: ("octo", ["mine", "other", "secret"])})
+                  {1: ("octo", ["mine", "other", "secret", "specs"])})
 fake.client_id = os.environ["CLIENT_ID"]
 BROKER_TOKEN = "broker-token"
 IDENTITIES = {"sandbox-token": "system:serviceaccount:ws:sandbox",
@@ -59,15 +59,26 @@ GIT_ROOT = pathlib.Path("/srv/git")
 GIT_URL = re.compile(r"^/([^/]+)/([^/]+)\.git/.*")
 
 
+EXTRA_FILES = {  # beyond README.md: a project that names its spec store, and the central store repo
+    "mine": {"openspec/config.yaml": "store: terracotta-army\n"},
+    "specs": {"terracotta-army/openspec/config.yaml": "schema: spec-driven\n",
+              "terracotta-army/openspec/specs/.gitkeep": "", "terracotta-army/openspec/changes/.gitkeep": ""},
+}
+
+
 def seed_repos() -> None:
-    for name in ("mine", "other", "secret"):
+    for name in ("mine", "other", "secret", "specs"):
         bare = GIT_ROOT / "octo" / f"{name}.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
         with tempfile.TemporaryDirectory() as w:
             def g(*a):
                 subprocess.run(["git", "-C", w, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True)
             g("init", "-q", "-b", "main")
-            pathlib.Path(w, "README.md").write_text(f"octo/{name}\n")
+            files = {"README.md": f"octo/{name}\n", **EXTRA_FILES.get(name, {})}
+            for rel, text in files.items():
+                f = pathlib.Path(w, rel)
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(text)
             g("add", ".")
             g("commit", "-q", "-m", "seed")
             g("push", "-q", str(bare), "main")

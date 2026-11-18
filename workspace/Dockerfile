@@ -33,8 +33,8 @@ RUN cd /opt/tools && npm ci --no-audit --no-fund \
 
 FROM base
 COPY --from=tools /opt/tools /opt/tools
-RUN for b in claude opencode happier claude-mem bun; do ln -s /opt/tools/node_modules/.bin/$b /usr/local/bin/$b; done \
-    && claude --version && opencode --version && happier --version && bun --version && mise --version
+RUN for b in claude opencode happier claude-mem bun openspec; do ln -s /opt/tools/node_modules/.bin/$b /usr/local/bin/$b; done \
+    && claude --version && opencode --version && happier --version && bun --version && openspec --version && mise --version
 
 COPY workspace/bin/ /usr/local/bin/
 COPY workspace/AGENTS.md /etc/terracotta-workspace/AGENTS.md

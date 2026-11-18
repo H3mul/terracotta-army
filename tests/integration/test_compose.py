@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(not shutil.which("docker"), reason="docker not a
 
 POLICY = """
 read:
-  standing: {allow: ["octo/mine"], deny: ["octo/secret"]}
+  standing: {allow: ["octo/mine", "octo/specs"], deny: ["octo/secret"]}
   adhoc: {allow: ["octo/*"], max_ttl: 1h}
 """
 
@@ -116,8 +116,9 @@ def test_02_standing_read_is_served_with_a_narrow_token(h):
             break
         time.sleep(0.5)
     assert code == 200 and body["username"] == "x-access-token" and body["password"].startswith("ghs_")
-    narrow = [t for t in h.state()["tokens"] if t["repos"] == ["mine"] and not t["revoked"]]
+    narrow = [t for t in h.state()["tokens"] if "mine" in t["repos"] and not t["revoked"]]
     assert narrow and narrow[0]["perms"] == {"contents": "read", "metadata": "read"}
+    assert "other" not in narrow[0]["repos"] and "secret" not in narrow[0]["repos"]
 
 
 def test_03_unlisted_and_denied_repos_get_hints_not_tokens(h):
@@ -331,3 +332,18 @@ def test_21_toolchain_step_in(h):
     rc, out = h.ws_ssh("cd /workspace/dev/via-ssh && echo '{}' > devbox.json && ws-tool run -- true; echo $?")
     assert "not available in this workspace yet" in out and out.startswith("3")
     h.ws_ssh("cd /workspace/dev/via-ssh && rm -f devbox.json")
+
+
+def test_22_spec_store_is_cloned_registered_and_linked_to_projects(h):
+    rc, out = h.ws_ssh("ws clone octo/mine proj-before-store")
+    assert rc == 0 and "which is not in /workspace/openspec" in out, out  # tells the agent what to do
+    rc, out = h.ws_ssh("ws store clone octo/specs")
+    assert rc == 0 and "registered store terracotta-army" in out, out
+    rc, out = h.ws_ssh("openspec store list")
+    assert "terracotta-army" in out and "/workspace/openspec/terracotta-army" in out, out
+    rc, out = h.ws_ssh("ws clone octo/mine proj-after-store")
+    assert rc == 0 and "spec store 'terracotta-army' linked" in out, out
+    assert h.ws_ssh("ws store sync")[1].strip() == ""  # idempotent: nothing new to register
+    rc, out = h.ws_ssh("ls /home/agent/.local/share/openspec/stores/registry.yaml")  # on the home volume
+    assert rc == 0
+    assert h.ws_ssh("ws store clone octo/specs")[0] != 0  # will not overwrite an existing checkout

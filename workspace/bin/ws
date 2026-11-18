@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""ws: workspace helper. `ws clone owner/repo [name]`, `ws status`."""
+"""ws: workspace helper.
+
+  ws clone OWNER/REPO [NAME]   checkout into /workspace/dev/NAME and link its OpenSpec store
+  ws status                    list checkouts
+  ws store clone OWNER/REPO    clone the central OpenSpec repo into /workspace/openspec
+  ws store sync                register every store under /workspace/openspec with openspec
+
+A project points at its spec store with `store: <id>` in openspec/config.yaml; each machine maps
+ids to local folders in its own registry (~/.local/share/openspec/stores/registry.yaml, on the
+home volume). The layout is the same relative shape as on the operator's host: <root>/openspec/<id>
+for stores and <root>/dev/<project> for checkouts.
+"""
 
 import os
 import pathlib
@@ -10,7 +21,8 @@ import sys
 ROOT = pathlib.Path(os.environ.get("WS_ROOT", "/workspace"))
 REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-USAGE = "usage: ws clone OWNER/REPO [NAME] | ws status"
+USAGE = "usage: ws clone OWNER/REPO [NAME] | ws status | ws store clone OWNER/REPO | ws store sync"
+REGISTRY = pathlib.Path(os.environ.get("OPENSPEC_REGISTRY", pathlib.Path.home() / ".local/share/openspec/stores/registry.yaml"))
 
 
 def clone(repo: str, name: str | None) -> int:
@@ -25,14 +37,74 @@ def clone(repo: str, name: str | None) -> int:
     if dest.exists():
         print(f"ws: {dest} already exists", file=sys.stderr)
         return 1
-    return subprocess.run(["git", "clone", f"https://github.com/{repo}.git", str(dest)]).returncode
+    rc = subprocess.run(["git", "clone", f"https://github.com/{repo}.git", str(dest)], check=False).returncode
+    if rc == 0:
+        link_store(dest)
+    return rc
+
+
+def project_store(checkout: pathlib.Path) -> str | None:
+    try:
+        text = (checkout / "openspec" / "config.yaml").read_text()
+    except OSError:
+        return None
+    m = re.search(r"^store:\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*$", text, re.M)
+    return m.group(1) if m else None
+
+
+def link_store(checkout: pathlib.Path) -> None:
+    """After a clone: make the project's spec store resolvable, or say what is missing."""
+    sid = project_store(checkout)
+    if sid is None:
+        return
+    if (ROOT / "openspec" / sid).is_dir():
+        sync_stores()
+        print(f"ws: spec store {sid!r} linked (/workspace/openspec/{sid})")
+    else:
+        print(f"ws: this project uses spec store {sid!r}, which is not in {ROOT}/openspec. "
+              "Run `ws store clone OWNER/REPO` for the central OpenSpec repo.", file=sys.stderr)
+
+
+def registered() -> set[str]:
+    try:
+        return {m.group(1).strip() for m in re.finditer(r"local_path:\s*(.+)", REGISTRY.read_text())}
+    except OSError:
+        return set()
+
+
+def sync_stores() -> int:
+    base = ROOT / "openspec"
+    known, rc = registered(), 0
+    for d in sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")) if base.is_dir() else []:
+        if str(d) in known or not ((d / ".openspec-store").exists() or (d / "openspec").is_dir()):
+            continue
+        r = subprocess.run(["openspec", "store", "register", str(d), "--yes"], capture_output=True, text=True,
+                           check=False)
+        print(f"ws: registered store {d.name}" if r.returncode == 0 else f"ws: could not register {d.name}: {r.stderr.strip()}")
+        rc |= r.returncode
+    return rc
+
+
+def store_clone(repo: str) -> int:
+    dest = ROOT / "openspec"
+    if not REPO.fullmatch(repo) or ".." in repo:
+        print(f"ws: not an owner/repo: {repo!r}", file=sys.stderr)
+        return 2
+    if (dest / ".git").exists():
+        print(f"ws: {dest} is already a git checkout", file=sys.stderr)
+        return 1
+    if dest.exists() and any(dest.iterdir()):
+        print(f"ws: {dest} is not empty", file=sys.stderr)
+        return 1
+    rc = subprocess.run(["git", "clone", f"https://github.com/{repo}.git", str(dest)], check=False).returncode
+    return rc or sync_stores()
 
 
 def status() -> int:
     dev = ROOT / "dev"
     for d in sorted(p for p in dev.iterdir() if (p / ".git").exists()) if dev.is_dir() else []:
         out = subprocess.run(["git", "-C", str(d), "status", "-sb", "--porcelain"],
-                             capture_output=True, text=True).stdout.splitlines()
+                             capture_output=True, text=True, check=False).stdout.splitlines()
         print(f"{d.name:24} {out[0][3:] if out else '?'}{'  (modified)' if len(out) > 1 else ''}")
     return 0
 
@@ -42,6 +114,10 @@ def main(argv: list[str]) -> int:
         return clone(argv[2], argv[3] if len(argv) == 4 else None)
     if argv[1:] == ["status"]:
         return status()
+    if len(argv) == 4 and argv[1:3] == ["store", "clone"]:
+        return store_clone(argv[3])
+    if argv[1:] == ["store", "sync"]:
+        return sync_stores()
     print(USAGE, file=sys.stderr)
     return 2
 
