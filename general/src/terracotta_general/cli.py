@@ -194,6 +194,9 @@ def ssh_shell() -> None:
     from terracotta_general import sshshell
 
     def dispatch(argv: list[str]) -> None:
-        typer.main.get_command(app).main(args=argv, prog_name="terracotta-general", standalone_mode=False)
+        # standalone_mode=False returns an Exit's code instead of raising it
+        code = typer.main.get_command(app).main(args=argv, prog_name="terracotta-general", standalone_mode=False)
+        if isinstance(code, int) and code:
+            raise typer.Exit(code)
 
     raise typer.Exit(sshshell.main(dispatch))

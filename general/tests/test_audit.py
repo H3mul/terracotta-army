@@ -54,3 +54,17 @@ def test_unknown_field_and_bad_types_refused():
     for bad in ({"token": "x"}, {"repo": ["a"]}, {"ttl": True}):
         with pytest.raises(AuditError):
             log.write("grant", **bad)
+
+
+def test_chain_continues_across_restarts_and_refuses_a_broken_file():
+    import io
+
+    from terracotta_general.audit import AuditError, AuditLog, resume_point, verify
+    a = io.StringIO()
+    AuditLog(a).write("one")
+    prev, seq = resume_point(a.getvalue().splitlines())
+    AuditLog(a, prev=prev, seq=seq).write("two")
+    assert verify(a.getvalue().splitlines()) == 2
+    lines = a.getvalue().splitlines()
+    with pytest.raises(AuditError):
+        resume_point(lines[1:])

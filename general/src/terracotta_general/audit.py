@@ -35,8 +35,9 @@ def _digest(prev: str, body: dict) -> str:
 
 
 class AuditLog:
-    def __init__(self, *sinks: TextIO, clock: Callable[[], float] = time.time, prev: str = GENESIS):
-        self._sinks, self._clock, self._prev, self._seq = sinks, clock, prev, 0
+    def __init__(self, *sinks: TextIO, clock: Callable[[], float] = time.time,
+                 prev: str = GENESIS, seq: int = 0):
+        self._sinks, self._clock, self._prev, self._seq = sinks, clock, prev, seq
 
     def write(self, event: str, **fields: str | int) -> dict:
         fields["event"] = event
@@ -72,3 +73,13 @@ def verify(lines: Iterable[str]) -> int:
             raise AuditError(f"record {i + 1}: chain broken")
         prev, n = h, n + 1
     return n
+
+
+def resume_point(lines: list[str]) -> tuple[str, int]:
+    """Verify an existing file and return (last hash, last seq) to continue its chain."""
+    lines = [x for x in lines if x.strip()]
+    if not lines:
+        return GENESIS, 0
+    verify(lines)
+    last = json.loads(lines[-1])
+    return last["hash"], last["seq"]

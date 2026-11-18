@@ -4,8 +4,8 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-server openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/sh tg \
-    && mkdir -p /etc/terracotta /var/lib/terracotta-ssh /run/terracotta /run/sshd \
-    && chown tg /var/lib/terracotta-ssh /run/terracotta
+    && mkdir -p /etc/terracotta /var/lib/terracotta-ssh /run/terracotta /run/sshd /var/lib/terracotta \
+    && chown tg /var/lib/terracotta-ssh /run/terracotta /var/lib/terracotta
 WORKDIR /app
 COPY general/ ./
 RUN pip install --no-cache-dir .

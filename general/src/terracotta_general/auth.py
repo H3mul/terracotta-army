@@ -38,8 +38,10 @@ class TokenReview:
             # Built lazily: outside a cluster the CA file is absent, and that must fail closed
             # on the first request rather than stop the daemon from starting.
             if self._client is None:
-                self._client = httpx.AsyncClient(
-                    verify=ssl.create_default_context(cafile=str(self._ca_path)), timeout=5.0)
+                # Plain http is only for the compose harness; the cluster API is always https.
+                verify = (ssl.create_default_context(cafile=str(self._ca_path))
+                          if self.api_url.startswith("https://") else True)
+                self._client = httpx.AsyncClient(verify=verify, timeout=5.0)
             r = await self._client.post(
                 f"{self.api_url}/apis/authentication.k8s.io/v1/tokenreviews",
                 json=body,
