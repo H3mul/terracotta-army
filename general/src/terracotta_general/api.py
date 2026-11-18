@@ -15,6 +15,7 @@ from terracotta_general.credential import serve_credential
 from terracotta_general.github import GitHubError
 from terracotta_general.lifecycle import describe_changes, digest
 from terracotta_general.requests import TransitionError
+from terracotta_general.standing import READ_PERMS
 
 MIN_CONTRACT = CONTRACT_VERSION  # callers older than this get 426
 
@@ -85,6 +86,25 @@ def admin_app(b: Broker) -> Starlette:
             ],
         })
 
+    async def protection(repo: str, pol) -> str:
+        """Tokens cannot be limited to a branch, so protection on the default branch is the backstop."""
+        if not b.app or b.life and b.life.stopped:
+            return "unknown: no GitHub access right now"
+        if not any(pol.decide(repo, lv).allowed for lv in ("standing", "read", "write")):
+            return "unknown: repo is not in policy"
+        try:
+            inst = await b.app.installation_for_repo(repo)
+            tok = await b.app.installation_token(inst, [repo.split("/", 1)[1]], READ_PERMS)
+        except GitHubError as e:
+            return f"unknown: {e}"
+        try:
+            branch, protected = await b.app.default_branch_protection(tok, repo)
+        except GitHubError as e:
+            return f"unknown: {e}"
+        finally:
+            await b.app.revoke(tok)
+        return f"{branch} is protected" if protected else f"{branch} is NOT protected"
+
     async def check(request: Request) -> JSONResponse:
         repo = request.query_params.get("repo", "").lower()
         pol = b.policy()
@@ -93,6 +113,7 @@ def admin_app(b: Broker) -> Starlette:
             "standing": pol.decide(repo, "standing").reason,
             "read": pol.decide(repo, "read").reason,
             "write": pol.decide(repo, "write").reason,
+            "protection": await protection(repo, pol),
             "standing_token": bool(b.standing and b.standing.token_for(repo)),
             "active": [{"id": r.id, "level": r.level} for r in b.store.active(repo)],
         })

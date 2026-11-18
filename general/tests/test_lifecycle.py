@@ -130,3 +130,17 @@ def test_failed_resume_stays_stopped(rig):
     b.app._http = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(500)))
     r = c.post("/admin/resume")
     assert r.status_code == 502 and b.life.stopped
+
+
+def test_check_reports_branch_protection_and_revokes_its_probe_token(rig):
+    b, _, fake, c = rig
+    b.app = b.standing._app
+    fake.protected.add("octo/mine")
+    before = set(fake.tokens)
+    assert c.get("/admin/check", params={"repo": "octo/mine"}).json()["protection"] == "main is protected"
+    assert c.get("/admin/check", params={"repo": "octo/other"}).json()["protection"] == "main is NOT protected"
+    probes = [v for t, v in fake.tokens.items() if t not in before]
+    assert len(probes) == 2 and all(v["revoked"] and v["repos"] and v["perms"] == {"contents": "read", "metadata": "read"} for v in probes)
+    assert c.get("/admin/check", params={"repo": "stranger/x"}).json()["protection"] == "unknown: repo is not in policy"
+    b.app = None
+    assert c.get("/admin/check", params={"repo": "octo/mine"}).json()["protection"].startswith("unknown")

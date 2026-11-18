@@ -114,6 +114,19 @@ class App:
                 return names
             page += 1
 
+    async def default_branch_protection(self, token: Token, repo: str) -> tuple[str, bool]:
+        """(default branch name, whether branch protection or a ruleset applies to it)."""
+        r = await self._call("GET", f"/repos/{repo}", token.value)
+        if r.status_code != 200:
+            raise GitHubError("github-refused")
+        branch = r.json().get("default_branch")
+        if not isinstance(branch, str):
+            raise GitHubError("github-bad-answer")
+        r = await self._call("GET", f"/repos/{repo}/branches/{branch}", token.value)
+        if r.status_code != 200:
+            raise GitHubError("github-refused")
+        return branch, bool(r.json().get("protected"))
+
     async def set_suspended(self, installation_id: int, suspended: bool) -> None:
         """Suspending an installation makes GitHub reject its tokens and refuse new ones."""
         r = await self._call("PUT" if suspended else "DELETE",

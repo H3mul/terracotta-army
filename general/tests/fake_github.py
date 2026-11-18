@@ -31,6 +31,7 @@ class FakeGitHub:
         self.tokens: dict[str, dict] = {}  # token -> {inst, repos, perms, revoked}
         self.broaden = False
         self.suspended: set[int] = set()
+        self.protected: set[str] = set()  # 'owner/repo' whose default branch is protected
         self.calls: list[str] = []
         self.client_id = "Iv-test"
 
@@ -95,6 +96,14 @@ class FakeGitHub:
             if self.broaden:
                 ans["permissions"]["administration"] = "write"
             return httpx.Response(201, json=ans)
+        m = re.fullmatch(r"/repos/([^/]+/[^/]+?)(?:/branches/main)?", path)
+        if m and not path.endswith("/installation"):
+            t = self._bearer(req)
+            if not t or m[1].split("/")[1] not in t["repos"] or "contents" not in t["perms"]:
+                return httpx.Response(404)
+            if path.endswith("/branches/main"):
+                return httpx.Response(200, json={"name": "main", "protected": m[1] in self.protected})
+            return httpx.Response(200, json={"default_branch": "main"})
         if path == "/installation/repositories":
             t = self._bearer(req)
             if not t:

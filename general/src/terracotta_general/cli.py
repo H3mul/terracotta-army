@@ -109,6 +109,7 @@ def check(repo: Repo) -> None:
     out = call("GET", "/admin/check", params={"repo": repo})
     for k in ("standing", "read", "write"):
         typer.echo(f"{k:9} {out[k]}")
+    typer.echo(f"protection {out['protection']}")
     typer.echo(f"standing token held: {out['standing_token']}")
     for a in out["active"]:
         typer.echo(f"active grant: {a['id']} ({a['level']})")
