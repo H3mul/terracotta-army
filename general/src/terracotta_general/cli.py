@@ -166,3 +166,14 @@ def stop() -> None:
 def resume() -> None:
     """Lift the emergency stop."""
     todo("resume")
+
+
+@app.command("ssh-shell", hidden=True)
+def ssh_shell() -> None:
+    """Forced command for operator SSH sessions (see sshshell)."""
+    from terracotta_general import sshshell
+
+    def dispatch(argv: list[str]) -> None:
+        typer.main.get_command(app).main(args=argv, prog_name="terracotta-general", standalone_mode=False)
+
+    raise typer.Exit(sshshell.main(dispatch))
