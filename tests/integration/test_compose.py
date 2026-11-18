@@ -308,3 +308,26 @@ def test_19_refuses_to_start_without_authorized_keys(env):
     r = run([*compose, "run", "--rm", "--no-deps", "-T", "-v", "/dev/null:/etc/terracotta-workspace/authorized_keys:ro",
              "sandbox"], env=e, timeout=60)
     assert r.returncode == 1 and "refusing to start" in r.stdout + r.stderr
+
+
+def test_20_agent_rules_are_in_place_and_global_installs_are_refused(h):
+    rc, out = h.ws_ssh("cat /workspace/dev/via-ssh/../../CLAUDE.md")
+    assert rc == 0 and "Tooling for a project: use this priority list" in out
+    assert h.ws_ssh("sh -c 'echo x >> /workspace/AGENTS.md'")[0] != 0  # the rules are not agent-editable
+    for cmd in ("apt-get install -y cowsay", "sudo id", "npm install -g left-pad", "pip install requests"):
+        rc, out = h.ws_ssh(cmd)
+        assert rc == 126 and "ws-tool bootstrap" in out, (cmd, out)
+
+
+def test_21_toolchain_step_in(h):
+    rc, out = h.ws_ssh("cd /workspace/dev/via-ssh && ws-tool detect")
+    assert rc == 0 and out.strip() == "none"
+    rc, out = h.ws_ssh("cd /workspace/dev/via-ssh && echo '{\"engines\":{\"node\":\">=20\"}}' > package.json "
+                       "&& ws-tool bootstrap && ws-tool detect && cat mise.toml && git status --porcelain")
+    assert rc == 0 and 'node = "20"' in out and "mise\tmise exec --" in out, out
+    status = h.ws_ssh("cd /workspace/dev/via-ssh && git status --porcelain")[1]
+    assert "mise.toml" not in status and "package.json" in status  # generated file stays out of git
+    h.ws_ssh("cd /workspace/dev/via-ssh && rm -f mise.toml package.json")
+    rc, out = h.ws_ssh("cd /workspace/dev/via-ssh && echo '{}' > devbox.json && ws-tool run -- true; echo $?")
+    assert "not available in this workspace yet" in out and out.startswith("3")
+    h.ws_ssh("cd /workspace/dev/via-ssh && rm -f devbox.json")

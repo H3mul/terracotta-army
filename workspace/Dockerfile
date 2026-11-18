@@ -37,6 +37,11 @@ RUN for b in claude opencode happier claude-mem bun; do ln -s /opt/tools/node_mo
     && claude --version && opencode --version && happier --version && bun --version && mise --version
 
 COPY workspace/bin/ /usr/local/bin/
+COPY workspace/AGENTS.md /etc/terracotta-workspace/AGENTS.md
+# Guard shims come first on PATH, then the mise shims (project tools), then the system.
+RUN mkdir -p /usr/local/lib/ws-guard \
+    && for n in apt apt-get dpkg sudo pip pip3 npm; do ln -s /usr/local/bin/ws-guard /usr/local/lib/ws-guard/$n; done
+ENV PATH=/usr/local/lib/ws-guard:/home/agent/.local/share/mise/shims:$PATH
 COPY workspace/etc/gitconfig /etc/gitconfig
 COPY workspace/ssh/sshd_config /etc/terracotta-workspace/sshd_config
 COPY contract/VERSION /usr/local/share/terracotta/CONTRACT_VERSION

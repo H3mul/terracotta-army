@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Guard shims for commands that change the machine instead of the project.
+
+Installed as apt, apt-get, dpkg, sudo, pip, pip3 and npm in /usr/local/lib/ws-guard, which is
+first on PATH. The container is not root, so apt and sudo would fail anyway; this turns the failure
+into an instruction. Not a security boundary (`python -m pip` still exists); the boundary is the
+unprivileged user and the read-only image.
+"""
+
+import os
+import pathlib
+import shutil
+import sys
+
+GUARD_DIR = os.environ.get("WS_GUARD_DIR", "/usr/local/lib/ws-guard")
+HOW = ("Project tools come from the project's toolchain: `ws-tool bootstrap` once, then "
+       "`ws-tool run -- <command>`. A missing system package is the operator's call: say what you need.")
+
+
+def refuse(why: str) -> int:
+    print(f"ws-guard: {why}. {HOW}", file=sys.stderr)
+    return 126
+
+
+def real(name: str) -> str | None:
+    path = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
+                           if pathlib.Path(p).resolve() != pathlib.Path(GUARD_DIR).resolve())
+    return shutil.which(name, path=path)
+
+
+def main(argv: list[str]) -> int:
+    name = pathlib.Path(argv[0]).name
+    args = argv[1:]
+    if name in ("apt", "apt-get", "dpkg", "sudo"):
+        return refuse(f"`{name}` is not available: the workspace is unprivileged and its image is fixed")
+    if name in ("pip", "pip3") and not os.environ.get("VIRTUAL_ENV") and "--target" not in args:
+        return refuse(f"`{name}` outside a virtual environment would install globally")
+    if name == "npm" and (set(args) & {"-g", "--global"} or "--location=global" in args
+                          or ("--location" in args and "global" in args)):
+        return refuse("a global npm install is not allowed")
+    target = real(name)
+    if target is None:
+        print(f"ws-guard: {name}: command not found", file=sys.stderr)
+        return 127
+    os.execv(target, [target, *args])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

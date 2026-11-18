@@ -24,7 +24,7 @@ SSHD_TEMPLATE = pathlib.Path("/etc/terracotta-workspace/sshd_config")
 PORT = 2222
 # What git and ws need inside SSH sessions (sshd does not pass the container environment).
 # Never an API key.
-PASS_TO_SESSIONS = ("TG_BROKER", "TG_TOKEN_FILE", "TG_CONTRACT_FILE", "GIT_TERMINAL_PROMPT", "WS_ROOT",
+PASS_TO_SESSIONS = ("PATH", "TG_BROKER", "TG_TOKEN_FILE", "TG_CONTRACT_FILE", "GIT_TERMINAL_PROMPT", "WS_ROOT",
                     "GIT_SSL_CAINFO")
 CRASH_WINDOW, CRASH_LIMIT = 60.0, 5
 
@@ -50,6 +50,19 @@ def render_sshd_config(key: pathlib.Path, out: pathlib.Path = pathlib.Path("/tmp
     env = " ".join(f"{k}={os.environ[k]}" for k in PASS_TO_SESSIONS if k in os.environ)
     out.write_text(SSHD_TEMPLATE.read_text() + f"HostKey {key}\n" + (f"SetEnv {env}\n" if env else ""))
     return out
+
+
+def link_instructions() -> None:
+    """The workspace rules live in the image (the agent cannot edit them) and are linked into the
+    volume where Claude Code and OpenCode find them by walking up from a project checkout."""
+    src, root = pathlib.Path("/etc/terracotta-workspace/AGENTS.md"), pathlib.Path(os.environ.get("WS_ROOT", "/workspace"))
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        dst = root / name
+        if dst.is_symlink() or not dst.exists():
+            dst.unlink(missing_ok=True)
+            dst.symlink_to(src)
+        else:
+            log(f"{dst} exists and is not ours; leaving it")
 
 
 def happier_paired() -> bool:
@@ -116,6 +129,7 @@ def main() -> int:
     if not AUTH_KEYS.is_file() or not AUTH_KEYS.read_text().strip():
         log(f"no authorized keys at {AUTH_KEYS}: nobody could log in, refusing to start")
         return 1
+    link_instructions()
     key = host_key()
     cfg = render_sshd_config(key)
     fp = subprocess.run(["ssh-keygen", "-lf", f"{key}.pub"], capture_output=True, text=True, check=False)

@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""ws-tool: project toolchain step-in. Works without a TTY and without shell activation.
+
+  ws-tool detect [-C DIR]            which toolchain the project declares, and the command prefix
+  ws-tool run [-C DIR] -- CMD...     run CMD inside the project's toolchain
+  ws-tool bootstrap [-C DIR]         write a minimal mise.toml from the project's manifests (only
+                                     when no toolchain is declared) and keep it out of git
+
+Priority: mise, then devbox, then nix. Phase 1 installs only mise; a project that declares devbox
+or nix gets a clear "not available yet" answer (exit 3) rather than a half-working environment.
+"""
+
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+
+DECLARED = [
+    ("mise", ["mise.toml", ".mise.toml", "mise.local.toml", ".tool-versions"]),
+    ("devbox", ["devbox.json"]),
+    ("nix", ["flake.nix"]),
+]
+PREFIX = {"mise": ["mise", "exec", "--"], "devbox": ["devbox", "run", "--"], "nix": ["nix", "develop", "-c"]}
+AVAILABLE = {"mise"}  # phase 1; add devbox here when the image ships it (ta-toolchain-stepin 2.1)
+UNAVAILABLE = 3
+
+
+def detect(d: pathlib.Path) -> str | None:
+    for name, files in DECLARED:
+        if any((d / f).is_file() for f in files):
+            return name
+    return None
+
+
+def _read(d: pathlib.Path, name: str) -> str:
+    try:
+        return (d / name).read_text()
+    except OSError:
+        return ""
+
+
+def _major_minor(spec: str) -> str | None:
+    m = re.search(r"(\d+(?:\.\d+)?)", spec)
+    return m.group(1) if m else None
+
+
+def wanted_tools(d: pathlib.Path) -> dict[str, str]:
+    """Tool -> version, from the manifests a project already has. Never guesses a language."""
+    tools: dict[str, str] = {}
+    pkg = _read(d, "package.json")
+    if pkg:
+        try:
+            engines = json.loads(pkg).get("engines", {})
+        except ValueError:
+            engines = {}
+        tools["node"] = _major_minor(str(engines.get("node", ""))) or "lts"
+    for f in (".nvmrc", ".node-version"):
+        v = _major_minor(_read(d, f))
+        if v:
+            tools["node"] = v
+    m = re.search(r'requires-python\s*=\s*"([^"]+)"', _read(d, "pyproject.toml"))
+    if m or (d / "pyproject.toml").is_file() or (d / "requirements.txt").is_file():
+        tools["python"] = _major_minor(m.group(1)) if m and _major_minor(m.group(1)) else "3.12"
+    m = re.search(r"^go\s+(\d+\.\d+)", _read(d, "go.mod"), re.M)
+    if m:
+        tools["go"] = m.group(1)
+    if (d / "Cargo.toml").is_file() or (d / "rust-toolchain.toml").is_file() or (d / "rust-toolchain").is_file():
+        tools["rust"] = "stable"
+    return tools
+
+
+def _exclude_path(d: pathlib.Path) -> pathlib.Path | None:
+    r = subprocess.run(["git", "-C", str(d), "rev-parse", "--git-path", "info/exclude"],
+                       capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return None
+    p = pathlib.Path(r.stdout.strip())
+    return p if p.is_absolute() else d / p
+
+
+def bootstrap(d: pathlib.Path) -> int:
+    have = detect(d)
+    if have:
+        print(f"already declared: {have}; nothing to do")
+        return 0
+    tools = wanted_tools(d)
+    if not tools:
+        print("no manifests recognised (package.json, pyproject.toml, go.mod, Cargo.toml); nothing to write")
+        return 0
+    out = d / "mise.toml"
+    out.write_text("[tools]\n" + "".join(f'{k} = "{v}"\n' for k, v in sorted(tools.items())))
+    ex = _exclude_path(d)
+    if ex is not None:  # generated environment files stay out of the project's history
+        ex.parent.mkdir(parents=True, exist_ok=True)
+        lines = ex.read_text().splitlines() if ex.exists() else []
+        if "mise.toml" not in lines:
+            ex.write_text("\n".join([*lines, "mise.toml"]) + "\n")
+    if shutil.which("mise"):  # trust only the file written here, never a project's own
+        subprocess.run(["mise", "trust", str(out)], capture_output=True, check=False)
+    print(f"wrote {out} ({', '.join(f'{k} {v}' for k, v in sorted(tools.items()))}); excluded from git")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    args = argv[1:]
+    d = pathlib.Path.cwd()
+    if "-C" in args:
+        i = args.index("-C")
+        d = pathlib.Path(args[i + 1])
+        del args[i:i + 2]
+    cmd, rest = (args[0], args[1:]) if args else ("", [])
+    if cmd == "detect":
+        name = detect(d)
+        if name is None:
+            print("none")
+        elif name in AVAILABLE:
+            print(f"{name}\t{' '.join(PREFIX[name])}")
+        else:
+            print(f"{name}\tunavailable")
+            return UNAVAILABLE
+        return 0
+    if cmd == "run":
+        rest = rest[1:] if rest[:1] == ["--"] else rest
+        if not rest:
+            print("usage: ws-tool run [-C DIR] -- CMD...", file=sys.stderr)
+            return 2
+        name = detect(d)
+        if name and name not in AVAILABLE:
+            print(f"ws-tool: this project declares {name}, which is not available in this workspace yet. "
+                  "Tell the operator; do not install it yourself.", file=sys.stderr)
+            return UNAVAILABLE
+        os.chdir(d)
+        argv = [*PREFIX[name], *rest] if name else rest
+        os.execvp(argv[0], argv)
+    if cmd == "bootstrap":
+        return bootstrap(d)
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
