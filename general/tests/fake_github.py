@@ -25,8 +25,9 @@ def new_keypair() -> tuple[str, str]:
 class FakeGitHub:
     """installations: {id: (login, [repo names])}. `broaden` makes token answers lie (too broad)."""
 
-    def __init__(self, public_key: str, installations: dict[int, tuple[str, list[str]]]):
-        self.pub, self.inst = public_key, installations
+    def __init__(self, public_key: str, installations: dict[int, tuple[str, list[str]]],
+                 clock=time.time):
+        self.pub, self.inst, self.clock = public_key, installations, clock
         self.tokens: dict[str, dict] = {}  # token -> {inst, repos, perms, revoked}
         self.broaden = False
         self.calls: list[str] = []
@@ -78,7 +79,7 @@ class FakeGitHub:
             tok = "ghs_" + secrets.token_hex(20)
             self.tokens[tok] = {"inst": iid, "repos": granted, "perms": body["permissions"], "revoked": False}
             shown = all_repos if self.broaden else granted
-            ans = {"token": tok, "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600)),
+            ans = {"token": tok, "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.clock() + 3600)),
                    "permissions": dict(body["permissions"]), "repository_selection": "selected" if repos is not None else "all"}
             if repos is not None:
                 ans["repositories"] = [{"name": r, "full_name": f"{self.inst[iid][0]}/{r}"} for r in shown]
