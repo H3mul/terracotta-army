@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from terracotta_general.audit import AuditLog
 from terracotta_general.auth import Authenticator
+from terracotta_general.grants import Grants
 from terracotta_general.policy import Policy
 from terracotta_general.requests import RequestStore
+from terracotta_general.standing import StandingRead
 
 
 @dataclass
 class Broker:
-    policy: Policy
+    policy: Callable[[], Policy]  # the active policy; a callable so activation can swap it
     store: RequestStore
     audit: AuditLog
     auth: Authenticator
     sandbox_identity: str  # the one ServiceAccount allowed to call the sandbox API
+    standing: StandingRead | None = None
+    grants: Grants | None = None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -9,6 +11,9 @@ from starlette.routing import Route
 
 from terracotta_general import CONTRACT_VERSION
 from terracotta_general.broker import Broker
+from terracotta_general.credential import serve_credential
+from terracotta_general.github import GitHubError
+from terracotta_general.requests import TransitionError
 
 MIN_CONTRACT = CONTRACT_VERSION  # callers older than this get 426
 
@@ -44,8 +49,15 @@ def sandbox_app(b: Broker) -> Starlette:
         who = await authenticate(b, request)
         if isinstance(who, JSONResponse):
             return who
-        # Credential serving lands with ta-general 2.3.
-        return JSONResponse({"hint": "no credentials available yet"}, status_code=403)
+        try:
+            body = json.loads(await request.body())
+            host, path, username = body["host"], body["path"], body.get("username", "")
+            if not all(isinstance(x, str) for x in (host, path, username)):
+                raise TypeError
+        except (ValueError, KeyError, TypeError):
+            return _refuse(b, 400, "body must be JSON with string host and path", caller=who)
+        status_code, out = await serve_credential(b, host, path, username, who)
+        return JSONResponse(out, status_code=status_code)
 
     async def status(request: Request) -> JSONResponse:
         who = await authenticate(b, request)
@@ -64,10 +76,48 @@ def admin_app(b: Broker) -> Starlette:
     async def status(_: Request) -> JSONResponse:
         return JSONResponse({
             "contract": CONTRACT_VERSION,
+            "standing": b.standing.repos() if b.standing else [],
             "grants": [
                 {"id": r.id, "repo": r.repo, "level": r.level, "ends": r.grant_ends}
                 for r in b.store.active()
             ],
         })
 
-    return Starlette(routes=[Route("/admin/status", status)])
+    async def check(request: Request) -> JSONResponse:
+        repo = request.query_params.get("repo", "").lower()
+        pol = b.policy()
+        return JSONResponse({
+            "repo": repo,
+            "standing": pol.decide(repo, "standing").reason,
+            "read": pol.decide(repo, "read").reason,
+            "write": pol.decide(repo, "write").reason,
+            "standing_token": bool(b.standing and b.standing.token_for(repo)),
+            "active": [{"id": r.id, "level": r.level} for r in b.store.active(repo)],
+        })
+
+    async def grant(request: Request) -> JSONResponse:
+        d = await request.json()
+        if d.get("level") != "read" or b.grants is None:
+            return JSONResponse({"error": "only read grants are available yet"}, status_code=501)
+        try:
+            r = await b.grants.grant_read(d["repo"], d.get("ttl") or None, "operator")
+        except PermissionError as e:
+            return JSONResponse({"error": str(e)}, status_code=403)
+        except TransitionError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except GitHubError as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+        return JSONResponse({"id": r.id, "repo": r.repo, "ttl": r.ttl, "ends": r.grant_ends})
+
+    async def revoke(request: Request) -> JSONResponse:
+        d = await request.json()
+        if b.grants is None:
+            return JSONResponse({"revoked": 0})
+        return JSONResponse({"revoked": await b.grants.revoke(d["repo"], d.get("level") or None)})
+
+    return Starlette(routes=[
+        Route("/admin/status", status),
+        Route("/admin/check", check),
+        Route("/admin/grant", grant, methods=["POST"]),
+        Route("/admin/revoke", revoke, methods=["POST"]),
+    ])

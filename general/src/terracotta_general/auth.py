@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import ssl
 from typing import Protocol
 
 import httpx
@@ -37,7 +38,8 @@ class TokenReview:
             # Built lazily: outside a cluster the CA file is absent, and that must fail closed
             # on the first request rather than stop the daemon from starting.
             if self._client is None:
-                self._client = httpx.AsyncClient(verify=str(self._ca_path), timeout=5.0)
+                self._client = httpx.AsyncClient(
+                    verify=ssl.create_default_context(cafile=str(self._ca_path)), timeout=5.0)
             r = await self._client.post(
                 f"{self.api_url}/apis/authentication.k8s.io/v1/tokenreviews",
                 json=body,

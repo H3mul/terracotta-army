@@ -8,6 +8,8 @@ from dataclasses import dataclass
 class Settings:
     policy_path: str
     sandbox_identity: str
+    reader_client_id: str
+    reader_key_path: str
     audience: str = "terracotta-general"
     admin_socket: str = "/run/terracotta/admin.sock"
     listen_host: str = "0.0.0.0"
@@ -16,12 +18,14 @@ class Settings:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
-        missing = [k for k in ("TG_POLICY", "TG_SANDBOX_IDENTITY") if not env.get(k)]
+        missing = [k for k in ("TG_POLICY", "TG_SANDBOX_IDENTITY", "TG_READER_CLIENT_ID", "TG_READER_KEY") if not env.get(k)]
         if missing:
             raise SystemExit(f"missing required environment: {', '.join(missing)}")
         return cls(
             policy_path=env["TG_POLICY"],
             sandbox_identity=env["TG_SANDBOX_IDENTITY"],
+            reader_client_id=env["TG_READER_CLIENT_ID"],
+            reader_key_path=env["TG_READER_KEY"],
             audience=env.get("TG_AUDIENCE", cls.audience),
             admin_socket=env.get("TG_ADMIN_SOCKET", cls.admin_socket),
             listen_host=env.get("TG_LISTEN_HOST", cls.listen_host),

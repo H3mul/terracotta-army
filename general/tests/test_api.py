@@ -23,7 +23,7 @@ class FakeAuth:
 @pytest.fixture
 def parts():
     buf = io.StringIO()
-    b = Broker(Policy(), RequestStore(), AuditLog(buf), FakeAuth(), SANDBOX)
+    b = Broker(lambda: Policy(), RequestStore(), AuditLog(buf), FakeAuth(), SANDBOX)
     return b, buf
 
 
@@ -35,7 +35,7 @@ def hdr(token="good", ver=str(CONTRACT_VERSION)):
 
 
 @pytest.mark.parametrize("headers,code", [
-    (hdr(), 403),                       # authenticated: reaches the (stub) handler
+    (hdr(), 400),                       # authenticated, but no JSON body
     (hdr(ver="abc"), 400),
     (hdr(ver="0"), 426),
     (hdr(token=None), 401),
@@ -46,8 +46,7 @@ def test_sandbox_credential_gating(parts, headers, code):
     b, buf = parts
     r = TestClient(sandbox_app(b)).post("/v1/credential", json={}, headers=headers)
     assert r.status_code == code
-    if code != 403 or "hint" not in r.json():
-        assert json.loads(buf.getvalue().splitlines()[-1])["event"] == "refused"
+    assert json.loads(buf.getvalue().splitlines()[-1])["event"] == "refused"
 
 
 def test_status_requires_auth_and_healthz_does_not(parts):
@@ -69,5 +68,6 @@ def test_admin_status(parts):
 def test_settings_require_policy_and_identity():
     with pytest.raises(SystemExit):
         Settings.from_env({})
-    s = Settings.from_env({"TG_POLICY": "/p", "TG_SANDBOX_IDENTITY": SANDBOX, "TG_LISTEN_PORT": "9"})
+    s = Settings.from_env({"TG_POLICY": "/p", "TG_SANDBOX_IDENTITY": SANDBOX, "TG_LISTEN_PORT": "9",
+                           "TG_READER_CLIENT_ID": "Iv", "TG_READER_KEY": "/k"})
     assert s.listen_port == 9 and s.audience == "terracotta-general"
