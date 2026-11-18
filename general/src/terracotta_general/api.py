@@ -14,6 +14,7 @@ from terracotta_general.broker import Broker
 from terracotta_general.credential import serve_credential
 from terracotta_general.github import GitHubError
 from terracotta_general.lifecycle import describe_changes, digest
+from terracotta_general.repo import parse_repo
 from terracotta_general.requests import TransitionError
 from terracotta_general.standing import READ_PERMS
 
@@ -23,6 +24,25 @@ MIN_CONTRACT = CONTRACT_VERSION  # callers older than this get 426
 def _refuse(b: Broker, code: int, reason: str, caller: str = "-") -> JSONResponse:
     b.audit.write("refused", caller=caller, status=code, reason=reason)
     return JSONResponse({"error": reason}, status_code=code)
+
+
+async def _body(request: Request) -> dict | None:
+    try:
+        d = await request.json()
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _bad(msg: str) -> JSONResponse:
+    return JSONResponse({"error": msg}, status_code=400)
+
+
+def _valid_repo(v: object) -> str | None:
+    try:
+        return parse_repo(v).lower() if isinstance(v, str) else None
+    except ValueError:
+        return None
 
 
 async def authenticate(b: Broker, request: Request) -> JSONResponse | str:
@@ -106,7 +126,9 @@ def admin_app(b: Broker) -> Starlette:
         return f"{branch} is protected" if protected else f"{branch} is NOT protected"
 
     async def check(request: Request) -> JSONResponse:
-        repo = request.query_params.get("repo", "").lower()
+        repo = _valid_repo(request.query_params.get("repo", ""))
+        if repo is None:
+            return _bad("repo must be owner/name")
         pol = b.policy()
         return JSONResponse({
             "repo": repo,
@@ -119,13 +141,19 @@ def admin_app(b: Broker) -> Starlette:
         })
 
     async def grant(request: Request) -> JSONResponse:
-        d = await request.json()
+        d = await _body(request)
+        repo = _valid_repo(d.get("repo")) if d else None
+        ttl = d.get("ttl") if d else None
+        if repo is None or not (ttl is None or isinstance(ttl, str)):
+            return _bad("body must be JSON with repo (owner/name) and an optional string ttl")
         if b.life and b.life.stopped:
             return JSONResponse({"error": "emergency stop is active; run resume first"}, status_code=409)
         if d.get("level") != "read" or b.grants is None:
             return JSONResponse({"error": "only read grants are available yet"}, status_code=501)
         try:
-            r = await b.grants.grant_read(d["repo"], d.get("ttl") or None, "operator")
+            r = await b.grants.grant_read(repo, ttl or None, "operator")
+        except ValueError as e:  # an unparseable ttl
+            return _bad(str(e))
         except PermissionError as e:
             return JSONResponse({"error": str(e)}, status_code=403)
         except TransitionError as e:
@@ -135,10 +163,14 @@ def admin_app(b: Broker) -> Starlette:
         return JSONResponse({"id": r.id, "repo": r.repo, "ttl": r.ttl, "ends": r.grant_ends})
 
     async def revoke(request: Request) -> JSONResponse:
-        d = await request.json()
+        d = await _body(request)
+        repo = _valid_repo(d.get("repo")) if d else None
+        level = d.get("level") if d else None
+        if repo is None or level not in (None, "", "read", "write"):
+            return _bad("body must be JSON with repo (owner/name) and level read, write or empty")
         if b.grants is None:
             return JSONResponse({"revoked": 0})
-        return JSONResponse({"revoked": await b.grants.revoke(d["repo"], d.get("level") or None)})
+        return JSONResponse({"revoked": await b.grants.revoke(repo, level or None)})
 
     async def policy_show(_: Request) -> JSONResponse:
         proposed, why = b.life.proposal()
@@ -150,7 +182,10 @@ def admin_app(b: Broker) -> Starlette:
         })
 
     async def policy_approve(request: Request) -> JSONResponse:
-        want = (await request.json()).get("hash", "")
+        d = await _body(request)
+        want = d.get("hash") if d else None
+        if not isinstance(want, str):
+            return _bad("body must be JSON with a string hash")
         try:
             pol = b.life.approve(want)
         except ValueError as e:
