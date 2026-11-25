@@ -14,6 +14,15 @@ On the GitHub account or organisation that owns the repositories:
 6. Generate a **private key** (PEM). It is the only secret the broker holds. Treat it as read access to every repository the App can see.
 7. Install the App on the account and choose the repositories it may ever see (the policy narrows further, but the App's installation is the outer limit).
 
+### The writer App (only needed once `grant write` exists)
+
+A second App, so the key the broker holds stays read-only:
+
+1. Same steps, but repository permissions **Contents: Read and write** and **Pull requests: Read and write**, and tick **Enable Device Flow**.
+2. Leave **Expire user authorization tokens** enabled.
+3. Generate a **client secret**. It is the only secret the broker holds for write. Do **not** generate a private key for this App.
+4. Install it on the repositories you will ever want to write to. Write grants are still one repository at a time and phone-approved.
+
 ## 2. Write the policy
 
 The policy is a proposal until you approve it (step 5). Example:
