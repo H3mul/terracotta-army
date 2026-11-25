@@ -150,7 +150,8 @@ Your SSH key can start grants and activate the proposed policy; it cannot approv
 ## 10. Things to know
 
 - Only approve a device code the broker just printed on your own SSH session, and check that GitHub's page names the writer App. A client ID is not secret, so anything with GitHub egress could start a device flow of its own and ask you to approve it; that token would reach every repository the writer App is installed on.
-- Put the repository that holds the controller's policy in `write.deny`, and require review on its default branch: a write token can push and open PRs, and without protection it could merge.
+- The egress policy repo (`ta-policy`) is the one repository whose write grant widens the workspace's own reach, so its `main` must be protected exactly as its README says: pull request required, status checks `check` and `approve`, administrators included, and the `egress-approval` environment with you as the reviewer. The agent's token has no `actions` permission and cannot press that button. Any other repo that holds policy belongs in `write.deny`.
+- Egress is closed. The workspace reaches only the hosts in `ta-policy`'s `egress/workspace.toml`; the agent asks for more with `ws egress request` (a PR you review), after you give it a write grant for `ta-policy`.
 - Tokens cannot be limited to a branch. Protect the default branch of every repository the sandbox can write to. `check` reports it.
 - Standing read lets the agent read every allowlisted repository and send it to anything the egress policy allows, at least the LLM API. Keep the allowlist narrow.
 - A broker restart ends all grants (write tokens still held are revoked at startup). Standing read comes back within a minute.
