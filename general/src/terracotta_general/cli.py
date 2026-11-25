@@ -64,6 +64,8 @@ def status() -> None:
     out = call("GET", "/admin/status")
     if out["stopped"]:
         typer.echo("EMERGENCY STOP ACTIVE (terracotta-general resume to lift)")
+    if "audit" in out:  # note these somewhere else: a truncated tail still verifies
+        typer.echo(f"audit: {out['audit']['records']} records, last hash {out['audit']['last'][:16]}")
     typer.echo(f"standing read: {len(out['standing'])} repos")
     for r in out["standing"]:
         typer.echo(f"  {r}")

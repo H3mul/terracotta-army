@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from terracotta_general.audit import AuditError, AuditLog, verify
+from terracotta_general.audit import GENESIS, AuditError, AuditLog, verify
 
 
 def make():
@@ -82,3 +82,12 @@ def test_unfinished_ops_after_a_crash_are_reported():
     log.write("mint", op="m1", state="started")           # in flight at the end of the log
     got = [(r["op"], r["crashed"]) for r in unfinished(buf.getvalue().splitlines())]
     assert got == [("r2", True), ("m1", False)]
+
+
+def test_head_reports_count_and_last_hash_for_noting_elsewhere():
+    log = AuditLog(io.StringIO())
+    assert log.head == (0, GENESIS)
+    rec = log.write("start", contract=1)
+    log.write("stop", caller="operator")
+    n, last = log.head
+    assert n == 2 and last != rec["hash"] and len(last) == 64

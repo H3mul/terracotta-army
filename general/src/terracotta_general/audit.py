@@ -39,6 +39,11 @@ class AuditLog:
                  prev: str = GENESIS, seq: int = 0):
         self._sinks, self._clock, self._prev, self._seq = sinks, clock, prev, seq
 
+    @property
+    def head(self) -> tuple[int, str]:
+        """(records so far, hash of the last one): note them elsewhere to detect a cut-off tail."""
+        return self._seq, self._prev
+
     def write(self, event: str, **fields: str | int) -> dict:
         fields["event"] = event
         for k, v in fields.items():

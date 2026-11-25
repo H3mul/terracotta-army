@@ -38,6 +38,7 @@ def broker(monkeypatch, tmp_path):
 def test_status_check_grant_revoke_flow(broker):
     r = runner.invoke(cli.app, ["status"])
     assert "standing read: 1 repos" in r.output and "octo/mine" in r.output
+    assert "audit: " in r.output and "records, last hash" in r.output
     r = runner.invoke(cli.app, ["check", "octo/other"])
     assert "allowed by" in r.output and "standing token held: False" in r.output
     r = runner.invoke(cli.app, ["grant", "read", "octo/other", "10m"])

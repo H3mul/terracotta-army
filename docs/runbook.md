@@ -141,4 +141,4 @@ Your SSH key can start grants and activate the proposed policy; it cannot approv
 - Standing read lets the agent read every allowlisted repository and send it to anything the egress policy allows, at least the LLM API. Keep the allowlist narrow.
 - A broker restart ends all grants (write tokens still held are revoked at startup). Standing read comes back within a minute.
 - Live write tokens are the one thing the broker writes to disk (`write-tokens.json`, 0600, on its own volume), so that a crash cannot leave one unrevocable. Keep that volume off the sandbox's reach.
-- Audit tail truncation is not detectable by the chain alone; ship the stdout stream to durable storage.
+- Audit tail truncation is not detectable by the chain alone: ship the stdout stream to durable storage, and now and then note the record count and last hash that `status` prints (a shorter log or a different hash at that count means tampering).
