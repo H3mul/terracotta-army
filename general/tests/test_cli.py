@@ -25,8 +25,9 @@ def test_parse_repo_accepts():
     assert parse_repo("octo-org/my.repo_1") == "octo-org/my.repo_1"
 
 
-def test_stub_commands_exit_2_and_validate_repo():
-    assert runner.invoke(app, ["grant", "write", "octo/repo", "30m"]).exit_code == 2
+def test_repo_arguments_are_validated_before_the_daemon_is_asked():
     assert runner.invoke(app, ["grant", "write", "not-a-repo"]).exit_code == 2  # usage error
+    assert runner.invoke(app, ["grant", "write", "octo/repo", "soon"]).exit_code == 2
+    assert runner.invoke(app, ["setup", "not-a-repo"]).exit_code == 2
     r = runner.invoke(app, ["check", "a/b/c"])
     assert r.exit_code != 0 and "not an owner/repo" in r.output

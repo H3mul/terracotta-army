@@ -1,4 +1,4 @@
-"""CLI skeleton. Every command is a stub until its task in ta-general lands."""
+"""The operator CLI: thin commands over the daemon's admin socket (reached over SSH)."""
 
 import json
 import os
@@ -50,11 +50,6 @@ def call(method: str, path: str, **kw) -> dict:
     return out
 
 
-def todo(name: str) -> None:
-    typer.echo(f"{name}: not implemented", err=True)
-    raise typer.Exit(2)
-
-
 @app.command()
 def serve() -> None:
     """Run the daemon (configured by TG_* environment variables)."""
@@ -90,10 +85,39 @@ def grant_read(repo: Repo, ttl: Ttl = "") -> None:
     typer.echo(f"granted read on {out['repo']} for {out['ttl'] // 60}m (request {out['id']})")
 
 
+EXIT_DENIED, EXIT_EXPIRED = 3, 4
+POLL = 2.0  # seconds between asking the daemon whether the phone approved
+
+
+def write_flow(repo: str, ttl: str) -> None:
+    """Start the device flow, show the code, wait for the daemon to report. Exits 0, 3 (denied), 4 (expired)."""
+    out = call("POST", "/admin/grant", json={"repo": repo, "level": "write", "ttl": ttl})
+    typer.echo(f"On your phone open {out['verification_uri']} and enter {out['user_code']}")
+    typer.echo(f"(check that GitHub names the writer App; waiting up to {out['expires_in'] // 60} min)")
+    end = time.time() + out["expires_in"] + 15
+    while time.time() < end:
+        st = call("GET", f"/admin/grant/{out['id']}")
+        if st["state"] == "approved":
+            typer.echo(f"granted write on {st['repo']} for {st['ttl'] // 60}m (request {st['id']})")
+            return
+        if st["state"] != "pending":
+            why = st["reason"] or st["state"]
+            typer.echo(f"not granted: {why}", err=True)
+            raise typer.Exit({"device-denied": EXIT_DENIED, "device-expired": EXIT_EXPIRED}.get(why, 1))
+        time.sleep(POLL)
+    typer.echo("not granted: timed out waiting for the daemon", err=True)
+    raise typer.Exit(EXIT_EXPIRED)
+
+
 @grant.command("write")
 def grant_write(repo: Repo, ttl: Ttl = "") -> None:
-    """Device flow, then a scoped write token."""
-    todo("grant write")
+    """Device flow on your phone, then a write token for this one repo."""
+    if ttl:
+        try:
+            parse_ttl(ttl)
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+    write_flow(repo, ttl)
 
 
 @app.command()
@@ -119,8 +143,28 @@ def check(repo: Repo) -> None:
 
 @app.command()
 def setup(repo: Repo, write: bool = False) -> None:
-    """Grant as needed, then print the sandbox clone command."""
-    todo("setup")
+    """Grant what is needed, then print the sandbox clone command."""
+    out = call("GET", "/admin/check", params={"repo": repo})
+    ok, active = out["allowed"], {a["level"] for a in out["active"]}
+    if ok["standing"]:
+        typer.echo(f"read: {repo} is on the standing allowlist")
+    elif "read" in active:
+        typer.echo(f"read: {repo} already has an active read grant")
+    elif ok["read"]:
+        r = call("POST", "/admin/grant", json={"repo": repo, "level": "read", "ttl": ""})
+        typer.echo(f"read: granted for {r['ttl'] // 60}m (request {r['id']})")
+    else:
+        typer.echo(f"not readable: {out['read']}", err=True)
+        raise typer.Exit(1)
+    if write:
+        if "write" in active:
+            typer.echo(f"write: {repo} already has an active write grant")
+        elif ok["write"]:
+            write_flow(repo, "")
+        else:
+            typer.echo(f"write refused: {out['write']}", err=True)
+            raise typer.Exit(1)
+    typer.echo(f"\nin the sandbox: ws clone {repo}")
 
 
 @app.command()
