@@ -43,6 +43,7 @@ RUN mkdir -p /usr/local/lib/ws-guard \
     && for n in apt apt-get dpkg sudo pip pip3 npm; do ln -s /usr/local/bin/ws-guard /usr/local/lib/ws-guard/$n; done
 ENV PATH=/usr/local/lib/ws-guard:/home/agent/.local/share/mise/shims:$PATH
 COPY workspace/etc/gitconfig /etc/gitconfig
+COPY workspace/etc/hooks/ /etc/terracotta-workspace/hooks/
 COPY workspace/ssh/sshd_config /etc/terracotta-workspace/sshd_config
 COPY contract/VERSION /usr/local/share/terracotta/CONTRACT_VERSION
 # Never prompt: a denial must end in the broker's hint, not a password prompt.

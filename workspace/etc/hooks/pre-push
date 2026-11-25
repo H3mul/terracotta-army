@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""System-wide pre-push hook: refuse a push whose new commits add a token-shaped string or the value
+of a secret-looking environment variable, naming the file and line (never printing the value).
+
+Scope: the push route only. It does not stop exfiltration over allowed egress (ta-threat-model R1, R7).
+The shape list mirrors general/src/terracotta_general/audit.py _SECRETISH plus common cloud shapes;
+the images are separate, so it is copied, with one test per shape.
+"""
+
+import os
+import re
+import subprocess
+import sys
+
+SHAPES = {
+    "GitHub token": r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}",
+    "API key (sk-)": r"\bsk-[A-Za-z0-9_-]{20,}",
+    "AWS access key": r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    "Slack token": r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+    "JWT": r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}",
+    "private key": r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+}
+ENV_NAME = re.compile(r"TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL", re.I)
+ZERO = "0" * 40
+
+
+def env_secrets() -> list[str]:
+    return [v for k, v in os.environ.items() if ENV_NAME.search(k) and len(v) >= 8]
+
+
+def added_lines(rng: list[str]) -> list[tuple[str, int, str]]:
+    """(file, line number, text) of every line the new commits add."""
+    out = subprocess.run(["git", "log", "-p", "-U0", "--no-color", "--format=", *rng],
+                         capture_output=True, text=True, check=False).stdout
+    res, path, n = [], "?", 0
+    for line in out.splitlines():
+        if line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else line[4:]
+        elif m := re.match(r"@@ -\S+ \+(\d+)", line):
+            n = int(m.group(1))
+        elif line.startswith("+"):
+            res.append((path, n, line[1:]))
+            n += 1
+    return res
+
+
+def scan(rng: list[str]) -> list[str]:
+    secrets, hits = env_secrets(), []
+    for path, n, text in added_lines(rng):
+        for name, rx in SHAPES.items():
+            if re.search(rx, text):
+                hits.append(f"{path}:{n}: looks like a {name}")
+        if any(s in text for s in secrets):
+            hits.append(f"{path}:{n}: contains the value of a secret in this pod's environment")
+    return hits
+
+
+def main() -> int:
+    refs = sys.stdin.read()
+    hits: list[str] = []
+    for line in refs.splitlines():
+        _lref, lsha, _rref, rsha = line.split()
+        if lsha == ZERO:
+            continue  # deleting a ref
+        hits += scan([f"{rsha}..{lsha}"] if rsha != ZERO else [lsha, "--not", "--remotes"])
+    if hits:
+        print("terracotta: push refused, the new commits appear to contain secrets:", file=sys.stderr)
+        for h in dict.fromkeys(hits):
+            print(f"  {h}", file=sys.stderr)
+        print("Remove them from the commits (and rotate them if real), then push again.", file=sys.stderr)
+        return 1
+    hook = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, check=False)
+    repo_hook = os.path.join(hook.stdout.strip(), "hooks", "pre-push")  # hooksPath hides the repo's own
+    if os.access(repo_hook, os.X_OK):
+        return subprocess.run([repo_hook, *sys.argv[1:]], input=refs, text=True, check=False).returncode
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

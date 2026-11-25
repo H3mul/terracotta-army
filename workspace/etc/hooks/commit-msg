@@ -1,0 +1,9 @@
+#!/bin/sh
+# System-wide commit-msg hook: every commit made in the workspace carries an Agent-authored trailer,
+# so pushes are recognisable in history and to branch-protection or review rules.
+# core.hooksPath replaces a repo's own hooks dir, so run the repo's commit-msg afterwards.
+git interpret-trailers --in-place --if-exists doNothing --trailer "Agent-authored: terracotta-workspace" "$1" || exit 1
+# not --git-path: with hooksPath set it resolves to this very script
+repo_hook="$(git rev-parse --git-dir)/hooks/commit-msg"
+[ -x "$repo_hook" ] && exec "$repo_hook" "$@"
+exit 0

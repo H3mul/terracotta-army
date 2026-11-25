@@ -10,3 +10,5 @@
 	pushInsteadOf = https://github.com/
 [init]
 	defaultBranch = main
+[core]
+	hooksPath = /etc/terracotta-workspace/hooks
