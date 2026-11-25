@@ -78,7 +78,7 @@ def _hits(patterns: list[str], repo: str) -> list[str]:
 class Policy(_Strict):
     read: Read = Field(default_factory=Read)
     write: Write = Field(default_factory=Write)
-    limits: Limits = Field(default_factory=Limits)
+    limits: Limits = Field(default_factory=lambda: Limits())
 
     @classmethod
     def load(cls, text: str) -> Policy:

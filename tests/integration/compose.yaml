@@ -56,6 +56,7 @@ services:
   operator:
     image: tg-it-broker
     entrypoint: ["sleep", "infinity"]
+    user: root  # the key is 0600 and owned by whoever runs the tests (uid 1001 on CI runners)
     volumes: ["${TG_IT_DIR}/operator_key:/key:ro"]
 
   # The workspace: the real workspace image (supervisor, sshd, git helper, ws) as the unprivileged
