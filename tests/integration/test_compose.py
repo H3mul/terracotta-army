@@ -31,6 +31,18 @@ def run(cmd, check=False, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, check=check, **kw)
 
 
+def wait_for_sshd(compose, e, tries=40):
+    """The operator sshd has no healthcheck: poll until it accepts a connection."""
+    import time
+    for _ in range(tries):
+        r = run([*compose, "exec", "-T", "operator", "python3", "-c",
+                "import socket; socket.create_connection(('sshd', 2222), 2).close()"], env=e)
+        if r.returncode == 0:
+            return
+        time.sleep(0.25)
+    pytest.fail("operator sshd did not come up")
+
+
 @pytest.fixture(scope="module")
 def env(tmp_path_factory):
     d = tmp_path_factory.mktemp("it")
@@ -48,11 +60,12 @@ def env(tmp_path_factory):
     shutil.copy(d / "operator_key.pub", d / "authorized_keys")
     e = {**os.environ, "TG_IT_DIR": str(d), "COMPOSE_PROJECT_NAME": f"tg-it-{uuid.uuid4().hex[:6]}"}
     compose = ["docker", "compose", "-f", str(HERE / "compose.yaml")]
-    up = run([*compose, "up", "-d", "--build", "--wait", "--wait-timeout", "120"], env=e)
+    # CI builds the images once with a layer cache (docker buildx bake) and sets TG_IT_PREBUILT
+    build = [] if os.environ.get("TG_IT_PREBUILT") else ["--build"]
+    up = run([*compose, "up", "-d", *build, "--wait", "--wait-timeout", "120"], env=e)
     if up.returncode:
         pytest.fail(up.stderr[-2000:])
-    import time
-    time.sleep(3)  # sshd has no healthcheck
+    wait_for_sshd(compose, e)
     yield compose, e, d
     run([*compose, "down", "-v", "--rmi", "local"], env=e)
 

@@ -25,6 +25,7 @@ fake = FakeGitHub(pathlib.Path(os.environ["PUBKEY"]).read_text(),
                   {1: ("octo", ["mine", "other", "secret", "specs"])})
 fake.client_id = os.environ["CLIENT_ID"]
 fake.writer_secret = os.environ["WRITER_SECRET"]
+fake.device_interval = 1  # real GitHub says 5; the harness has no reason to wait that long
 BROKER_TOKEN = "broker-token"
 IDENTITIES = {"sandbox-token": "system:serviceaccount:ws:sandbox",
               "intruder-token": "system:serviceaccount:ws:intruder"}

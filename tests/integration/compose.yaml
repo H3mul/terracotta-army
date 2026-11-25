@@ -27,6 +27,7 @@ x-broker-env: &broker-env
 
 services:
   stub:
+    image: tg-it-stub
     build: {context: ../.., dockerfile: tests/integration/stub/Dockerfile}
     environment: {PUBKEY: /keys/reader.pub, CLIENT_ID: Iv-it, WRITER_SECRET: it-writer-secret}
     volumes: ["${TG_IT_DIR}:/keys:ro"]
@@ -34,6 +35,7 @@ services:
 
   broker:
     <<: *hardened
+    image: tg-it-broker
     build: {context: ../.., dockerfile: general/Dockerfile}
     environment: *broker-env
     volumes:
@@ -69,6 +71,7 @@ services:
   # identity token. The operator reaches its sshd with the same key used for the broker.
   sandbox:
     <<: *hardened
+    image: tg-it-workspace
     build: {context: ../.., dockerfile: workspace/Dockerfile}
     environment:
       TG_BROKER: http://broker:8080

@@ -41,6 +41,7 @@ class FakeGitHub:
         self.writer_perms = {"contents": "write", "pull_requests": "write"}
         self.devices: dict[str, dict] = {}  # device_code -> {user_code, state}
         self.users: dict[str, dict] = {}  # parent user tokens
+        self.device_interval = 5  # seconds the device endpoint tells clients to wait
         self.slow_downs = 0  # next N polls answer slow_down
         self.ssh_keys: dict[str, list[str]] = {}  # login -> public key lines served at /<login>.keys
         self.broaden_scoped = False  # scoped answers claim more permissions than asked
@@ -80,7 +81,7 @@ class FakeGitHub:
             self.devices[code] = {"user_code": "ABCD-1234", "state": "pending"}
             return httpx.Response(200, json={"device_code": code, "user_code": "ABCD-1234",
                                              "verification_uri": "https://github.com/login/device",
-                                             "expires_in": 899, "interval": 5})
+                                             "expires_in": 899, "interval": self.device_interval})
         if path == "/login/oauth/access_token":
             form = parse_qs(req.content.decode())
             d = self.devices.get(form.get("device_code", [""])[0])

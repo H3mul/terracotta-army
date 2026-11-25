@@ -25,7 +25,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # Uncached, building the three images took about 3 of the 5 minutes: build them once with a layer cache.
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: general/Dockerfile, load: true, tags: tg-it-broker, cache-from: "type=gha,scope=it-broker", cache-to: "type=gha,scope=it-broker,mode=max"}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: tests/integration/stub/Dockerfile, load: true, tags: tg-it-stub, cache-from: "type=gha,scope=it-stub", cache-to: "type=gha,scope=it-stub,mode=max"}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: workspace/Dockerfile, load: true, tags: tg-it-workspace, cache-from: "type=gha,scope=it-workspace", cache-to: "type=gha,scope=it-workspace,mode=max"}
       - run: uv run --project general pytest tests/integration -v
+        env: { TG_IT_PREBUILT: "1" }
   images:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [general, secrets, integration]
