@@ -53,6 +53,15 @@ def test_revoke():
     assert next(iter(fake.tokens.values()))["revoked"]
 
 
+def test_a_token_without_a_repo_list_is_only_allowed_for_metadata():
+    fake, app = make()
+    for perms in ({"contents": "read"}, {"metadata": "read", "contents": "read"}):
+        with pytest.raises(GitHubError, match="unscoped"):
+            run(app.installation_token(1, None, perms))
+    assert not fake.tokens
+    run(app.installation_token(1, None, {"metadata": "read"}))  # the listing token still works
+
+
 def test_too_broad_permissions_are_revoked_and_refused():
     fake, app = make()
     fake.broaden = True  # answer claims all repos plus administration:write

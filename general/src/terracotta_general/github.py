@@ -88,6 +88,10 @@ class App:
     async def installation_token(
         self, installation_id: int, repositories: list[str] | None, permissions: dict[str, str]
     ) -> Token:
+        if repositories is None and set(permissions) - {"metadata"}:
+            # No list means every repo of the installation (129 on an "all" install): only a
+            # metadata-only listing token may be minted that way.
+            raise GitHubError("github-unscoped-refused")
         op = f"m{next(self._ops)}"
         what = f"{len(repositories)} repos" if repositories is not None else "listing"
         self._log("mint", op, "started", installation=installation_id, reason=what)

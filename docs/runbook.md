@@ -13,6 +13,7 @@ On the GitHub account or organisation that owns the repositories:
 5. Create, then note the **Client ID** (starts with `Iv`).
 6. Generate a **private key** (PEM). It is the only secret the broker holds. Treat it as read access to every repository the App can see.
 7. Install the App on the account and choose the repositories it may ever see (the policy narrows further, but the App's installation is the outer limit).
+   "All repositories" also covers repositories and forks you create later (checked: narrowed tokens still come back as `selected`), but then a leaked key reads every private repository you own, and only the policy narrows it. "Only select repositories" keeps GitHub's own limit.
 
 ### The writer App (only needed once `grant write` exists)
 
