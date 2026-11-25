@@ -1,0 +1,30 @@
+# Critical repositories: the ones whose compromise would let an agent widen its own reach.
+# `tools/sweep.py` checks each against the baseline in docs/hardening.md every day and nags on
+# drift. Every key below is optional; the defaults are the strict values.
+#
+#   visibility    "public" or "private": fail if the repo is not what is expected
+#   checks        status checks that must be required on the default branch (at least one if unset)
+#   min_approvals required approving reviews (0 is fine for a solo owner: you cannot approve yourself)
+#   actions       "selected" (default: only listed actions may run) or "any" (accepted, with a warning)
+#   interaction   public repos: who may open PRs, issues and comments ("collaborators_only")
+#   collaborators logins with direct access (default: the owner only)
+#   environments  environments that must exist with required reviewers
+#   protect_tags  a tag ruleset must exist (release tags)
+
+[[repo]]
+name = "H3mul/ta-policy"
+visibility = "public"
+checks = ["check", "approve"]
+environments = ["egress-approval"]
+
+[[repo]]
+name = "H3mul/terracotta-army"
+visibility = "public"
+checks = ["general", "secrets", "integration"]
+actions = "any"   # gitleaks, docker and sigstore actions; pin them by SHA, then switch to "selected"
+protect_tags = true
+
+[[repo]]
+name = "H3mul/homelab-k3s-flux"
+visibility = "public"
+checks = []       # set the CI check names once the repo has any

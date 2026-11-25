@@ -1,0 +1,50 @@
+# Daily check of the critical repositories (hardening/critical.toml) against docs/hardening.md.
+# The token is an environment secret: only workflows that run on main can read it. The nag is the
+# issue "Hardening drift" (created, updated, closed when clean) and the failed run itself.
+name: hardening-sweep
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    environment: hardening-read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sweep
+        id: sweep
+        env:
+          GITHUB_TOKEN: ${{ secrets.HARDENING_READ_TOKEN }}
+        run: |
+          set +e
+          python3 tools/sweep.py --report report.md --fix-commands > sweep.out
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          cat sweep.out
+      - name: Update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC: ${{ steps.sweep.outputs.rc }}
+        run: |
+          gh label create hardening-drift --color B60205 --description "A critical repo no longer meets the baseline" 2>/dev/null || true
+          open="$(gh issue list --label hardening-drift --state open --json number --jq '.[0].number // empty')"
+          if [ "$RC" != "0" ]; then
+            {
+              cat report.md
+              echo '<details><summary>Commands that would fix it (you run them)</summary>'
+              echo
+              echo '```'
+              sed -n '/^gh api/,$p' sweep.out
+              echo '```'
+              echo '</details>'
+            } > body.md
+            if [ -n "$open" ]; then gh issue edit "$open" --body-file body.md; else gh issue create --title "Hardening drift" --label hardening-drift --body-file body.md; fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "The sweep is clean again."
+          fi
+      - name: Fail the run when something is wrong
+        if: steps.sweep.outputs.rc != '0'
+        run: exit 1

@@ -33,8 +33,17 @@ within minutes.
 4. Install the writer App on this repo, and add it to the broker policy (`write.allow`).
 5. Point Flux at it (`cluster/terracotta-army-egress` in the homelab repo).
 
+## Critical repositories
+
+`hardening/critical.toml` lists the repos whose compromise would let an agent widen its own reach,
+and `docs/hardening.md` is the baseline each must meet (protected branch with administrators
+included, only members open PRs, read-only workflow token, and so on). `tools/sweep.py` checks it
+daily from `.github/workflows/hardening.yml`; drift opens an issue and fails the run so GitHub
+notifies you. It only reads: `--fix-commands` prints the commands for you to run.
+
 ## Local checks
 
     python3 -m unittest discover -s tests
     python3 tools/egress.py check
     python3 tools/egress.py add crates.io --reason "Rust crates"
+    GITHUB_TOKEN=... python3 tools/sweep.py --fix-commands
