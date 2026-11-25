@@ -2,7 +2,7 @@
 """Check the critical repositories against the hardening baseline (docs/hardening.md).
 
     sweep.py [--policy hardening/critical.toml] [--report report.md] [--json report.json]
-             [--fix-commands]
+             [--fix-commands] [--quiet]
 
 The administrator (default: the repo owner; `[admin] login` in the policy overrides it) owns every
 repo: a missing CODEOWNERS file is correct, and one that exists may name only the administrator and the
@@ -14,7 +14,8 @@ It only reads. Exit 0: every condition holds (warnings allowed). Exit 1: a condi
 or could not be checked ("unknown": the token cannot see that setting). `--fix-commands` prints the
 `gh api` commands that would repair the failures, each one starting with `env -u GITHUB_TOKEN -u GH_TOKEN`
 so it runs as your `gh` login even if a read-only token is exported in the shell (gh prefers the
-environment over its login); settings with no API come out as `#` comments. Nothing here changes a repo. Standard library only.
+environment over its login); settings with no API come out as `#` comments. Progress ("checking <repo>", one dot per API call, a summary per repo) goes to stderr, so stdout stays
+clean for the report and the commands; `--quiet` turns it off. Nothing here changes a repo. Standard library only.
 """
 
 from __future__ import annotations
@@ -328,6 +329,7 @@ def main(argv: list[str], get: Getter | None = None) -> int:
     p.add_argument("--report", type=pathlib.Path)
     p.add_argument("--json", type=pathlib.Path)
     p.add_argument("--fix-commands", action="store_true")
+    p.add_argument("--quiet", action="store_true", help="no progress on stderr")
     a = p.parse_args(argv)
     data = tomllib.loads(a.policy.read_text())
     default_admin = (data.get("admin") or {}).get("login", "")
@@ -339,8 +341,29 @@ def main(argv: list[str], get: Getter | None = None) -> int:
             return 2
         get = http_get(token)
     results: list[Result] = []
-    for cfg in cfgs:
-        results += Sweep(get, cfg).run()
+
+    def say(msg: str, end: str = "\n") -> None:
+        if not a.quiet:
+            print(msg, end=end, file=sys.stderr, flush=True)
+
+    say(f"sweeping {len(cfgs)} repo(s) from {a.policy.name}")
+    for n, cfg in enumerate(cfgs, 1):
+        calls = 0
+
+        def counted(path: str, _get: Getter = get) -> tuple[int, object]:
+            nonlocal calls
+            calls += 1
+            say(".", end="")
+            return _get(path)
+
+        say(f"[{n}/{len(cfgs)}] {cfg['name']} ", end="")
+        started = time.time()
+        got = Sweep(counted, cfg).run()
+        results += got
+        bad = [x for x in got if x.status in ("fail", "unknown")]
+        warn = [x for x in got if x.status == "warn"]
+        say(f" {len(got) - len(bad) - len(warn)} ok, {len(warn)} warn, {len(bad)} to fix "
+            f"({calls} API calls, {time.time() - started:.1f}s)")
     text = report(results)
     print(text)
     if a.report:

@@ -225,6 +225,23 @@ class Report(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(sweep.main(["--policy", str(pol)], get=lambda p: good().get(p, (404, {}))), 0)
 
+    def test_progress_goes_to_stderr_and_quiet_turns_it_off(self):
+        import contextlib
+        import io
+        pol = pathlib.Path(tempfile.mkdtemp()) / "p.toml"
+        pol.write_text(f'[[repo]]\nname = "{R}"\nchecks = ["check", "approve"]\n')
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            sweep.main(["--policy", str(pol), "--fix-commands"], get=lambda p: good().get(p, (404, {})))
+        self.assertIn("sweeping 1 repo(s)", err.getvalue())
+        self.assertIn(f"[1/1] {R} .", err.getvalue())
+        self.assertRegex(err.getvalue(), r"\d+ ok, \d+ warn, \d+ to fix \(\d+ API calls, [\d.]+s\)")
+        self.assertNotIn("sweeping", out.getvalue())  # the report and commands stay clean
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            sweep.main(["--policy", str(pol), "--quiet"], get=lambda p: good().get(p, (404, {})))
+        self.assertEqual(err.getvalue(), "")
+
     def test_a_policy_wide_administrator_overrides_the_repo_owner(self):
         import contextlib
         import io
