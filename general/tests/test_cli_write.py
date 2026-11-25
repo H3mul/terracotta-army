@@ -132,3 +132,11 @@ def test_keys_refresh_prints_fingerprints_and_a_failure_keeps_the_old_keys(rig):
     fake.ssh_keys["octo"] = []
     r = runner.invoke(cli.app, ["keys", "refresh"])
     assert r.exit_code == 1 and "no-keys" in r.output and "previous keys stay in force" in r.output
+
+
+def test_status_names_the_administrator_as_the_first_operator(rig):
+    b, _, _ = rig
+    r = runner.invoke(cli.app, ["status"])
+    assert "administrator: octo" in r.output and "also operators" not in r.output
+    b.keys._users = ["octo", "pal"]
+    assert "administrator: octo (also operators: pal)" in runner.invoke(cli.app, ["status"]).output

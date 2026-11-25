@@ -4,6 +4,10 @@
     sweep.py [--policy hardening/critical.toml] [--report report.md] [--json report.json]
              [--fix-commands]
 
+The administrator (default: the repo owner; `[admin] login` in the policy overrides it) owns every
+repo: a missing CODEOWNERS file is correct, and one that exists may name only the administrator and the
+`owners` exceptions listed for that repo.
+
 Needs GITHUB_TOKEN: a fine-grained token with read-only Administration and Metadata on the listed
 repos. It only reads. Exit 0: every condition holds (warnings allowed). Exit 1: a condition fails,
 or could not be checked ("unknown": the token cannot see that setting). `--fix-commands` prints the
@@ -13,6 +17,7 @@ or could not be checked ("unknown": the token cannot see that setting). `--fix-c
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import pathlib
@@ -62,6 +67,7 @@ def http_get(token: str, base: str = API) -> Getter:
 class Sweep:
     def __init__(self, get: Getter, cfg: dict, now: float | None = None):
         self.get, self.cfg, self.repo = get, cfg, cfg["name"]
+        self.admin = ""  # set once the repo's owner is known
         self.now = now if now is not None else time.time()
         self.out: list[Result] = []
         self.info: dict = {}
@@ -89,6 +95,7 @@ class Sweep:
         if not isinstance(info, dict):
             return self.out
         self.info = info
+        self.admin = (self.cfg.get("admin") or (info.get("owner") or {}).get("login") or "").lower()
         branch = info.get("default_branch", "main")
         self.repo_flags(info)
         self.branch(branch)
@@ -218,11 +225,10 @@ class Sweep:
                              f"gh api -X PUT repos/{r}/interaction-limits -f limit={want} -f expiry=six_months", level="warn")
             else:
                 self.unknown("only members open PRs", f"GET interaction-limits gave {status}")
-        owner = info.get("owner", {}).get("login", "")
         c = self.call("collaborators", f"/repos/{r}/collaborators?affiliation=direct&per_page=100")
         if isinstance(c, list):
-            allowed = set(cfg.get("collaborators", [owner]))
-            extra = sorted(x["login"] for x in c if x["login"] not in allowed)
+            allowed = {self.admin, *(x.lower() for x in cfg.get("collaborators", []))}
+            extra = sorted(x["login"] for x in c if x["login"].lower() not in allowed)
             self.add("collaborators", not extra, f"unexpected direct collaborators: {extra}",
                      f"gh api -X DELETE repos/{r}/collaborators/<login>")
         keys = self.call("deploy keys", f"/repos/{r}/keys")
@@ -232,14 +238,36 @@ class Sweep:
         hooks = self.call("webhooks", f"/repos/{r}/hooks")
         if isinstance(hooks, list):
             self.add("no webhooks", not hooks, f"{len(hooks)} webhook(s): check each is expected", level="warn")
-        found = any(self.get(f"/repos/{r}/contents/{p}")[0] == 200 for p in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"))
-        self.add("CODEOWNERS", found, "no CODEOWNERS file", level="warn")
+        self.codeowners()
+
+    def codeowners(self) -> None:
+        """No file is fine: the administrator owns everything. A file may name only exceptions we know."""
+        for path in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
+            status, f = self.get(f"/repos/{self.repo}/contents/{path}")
+            if status == 200 and isinstance(f, dict):
+                break
+        else:
+            self.add("CODEOWNERS", True)
+            return
+        try:
+            text = base64.b64decode(f.get("content", "")).decode()
+        except (ValueError, UnicodeDecodeError):
+            self.unknown("CODEOWNERS", "the file could not be read")
+            return
+        allowed = {self.admin, *(x.lower().lstrip("@") for x in self.cfg.get("owners", []))}
+        named = {tok.lstrip("@").lower() for line in text.splitlines() if not line.strip().startswith("#")
+                 for tok in line.split()[1:] if tok.startswith("@") or "@" in tok}
+        stray = sorted(named - allowed)
+        self.add("CODEOWNERS", not stray, f"owners outside the administrator and the listed exceptions: {stray}")
 
     def environment(self, name: str) -> None:
         env = self.call(f"environment {name}", f"/repos/{self.repo}/environments/{name}")
         if isinstance(env, dict):
             rules = [x for x in env.get("protection_rules", []) if x.get("type") == "required_reviewers"]
-            self.add(f"environment {name}", bool(rules and rules[0].get("reviewers")), "no required reviewers",
+            people = {((x.get("reviewer") or {}).get("login") or "").lower()
+                      for x in (rules[0].get("reviewers", []) if rules else []) if x.get("type") == "User"}
+            self.add(f"environment {name}", self.admin in people,
+                     f"the administrator ({self.admin}) is not a required reviewer",
                      f"set required reviewers in Settings, Environments, {name}")
 
     def tags(self) -> None:
@@ -273,7 +301,9 @@ def main(argv: list[str], get: Getter | None = None) -> int:
     p.add_argument("--json", type=pathlib.Path)
     p.add_argument("--fix-commands", action="store_true")
     a = p.parse_args(argv)
-    cfgs = tomllib.loads(a.policy.read_text()).get("repo", [])
+    data = tomllib.loads(a.policy.read_text())
+    default_admin = (data.get("admin") or {}).get("login", "")
+    cfgs = [{"admin": default_admin, **c} if default_admin else c for c in data.get("repo", [])]
     if get is None:
         token = os.environ.get("GITHUB_TOKEN", "")
         if not token:

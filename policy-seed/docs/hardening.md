@@ -11,6 +11,8 @@ repair what it found; you run them.
 
 ## Conditions
 
+The **administrator** is the repo owner unless `[admin] login` in `hardening/critical.toml` says otherwise. In the cluster it is the first operator in `TG_OPERATOR_GITHUB_USERS` (Flux `TA_ADMIN`), and the broker's `status` prints it.
+
 | Check | Required | Why |
 |---|---|---|
 | Pull request required on the default branch | yes | nothing reaches `main` without a PR you can see |
@@ -25,11 +27,11 @@ repair what it found; you run them.
 | Workflow token read-only by default; workflows cannot approve PRs | yes | a compromised step cannot write or approve |
 | Fork PR workflows need approval (public repos) | `all_external_contributors` | strangers cannot run code in your CI |
 | **Only members open PRs** (public repos) | interaction limit `collaborators_only` | strangers cannot open PRs, issues or comments; GitHub caps the limit at six months, so the sweep warns two weeks before it lapses and you renew it |
-| Direct collaborators | the owner only (or `collaborators` in the policy) | write access is the whole game |
+| Direct collaborators | the administrator only (or `collaborators` in the policy) | write access is the whole game |
 | Deploy keys | read-only | a writable key bypasses the token model |
 | Webhooks | none (warn) | each one is a data path out |
-| CODEOWNERS file | present (warn) | review requests go to a person |
-| Environments named in the policy | exist and have required reviewers | the approval gates are real |
+| CODEOWNERS | optional: the administrator owns everything; a file may name only the administrator and the repo's `owners` exceptions | enforcement never depended on the file (code-owner review is not required, since the agent's token acts as the administrator) |
+| Environments named in the policy | exist and have the administrator as a required reviewer | the approval gates are real |
 | Release tags protected (`protect_tags`) | an active tag ruleset (warn) | the images the pods run come from release tags |
 | Visibility | as stated in the policy | a private repo made public by mistake is caught |
 

@@ -1,3 +1,4 @@
+import base64
 import copy
 import importlib.util
 import pathlib
@@ -38,9 +39,8 @@ def good() -> dict:
         f"/repos/{R}/collaborators?affiliation=direct&per_page=100": (200, [{"login": "H3mul"}]),
         f"/repos/{R}/keys": (200, []),
         f"/repos/{R}/hooks": (200, []),
-        f"/repos/{R}/contents/.github/CODEOWNERS": (200, {}),
         f"/repos/{R}/environments/egress-approval": (200, {"protection_rules": [
-            {"type": "required_reviewers", "reviewers": [{"type": "User"}]}]}),
+            {"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "H3mul"}}]}]}),
         f"/repos/{R}/rulesets?includes_parents=true": (200, [{"target": "tag", "enforcement": "active"}]),
     }
 
@@ -122,13 +122,35 @@ class Baseline(unittest.TestCase):
         t[f"/repos/{R}/collaborators?affiliation=direct&per_page=100"] = (200, [{"login": "H3mul"}, {"login": "stranger"}])
         t[f"/repos/{R}/keys"] = (200, [{"title": "ci", "read_only": False}])
         t[f"/repos/{R}/hooks"] = (200, [{"id": 1}])
-        t[f"/repos/{R}/contents/.github/CODEOWNERS"] = (404, {})
         self.assertEqual(bad(run(t)), {("collaborators", "fail"), ("deploy keys read-only", "fail"),
-                                       ("no webhooks", "warn"), ("CODEOWNERS", "warn")})
+                                       ("no webhooks", "warn")})
+
+    def test_the_administrator_is_the_owner_unless_the_policy_says_otherwise(self):
+        t = good()
+        t[f"/repos/{R}/collaborators?affiliation=direct&per_page=100"] = (200, [{"login": "h3mul"}, {"login": "Pal"}])
+        self.assertEqual(bad(run(t)), {("collaborators", "fail")})  # case does not matter, a stranger does
+        self.assertEqual(bad(run(t, {**CFG, "collaborators": ["pal"]})), set())  # an exception makes it fine
+        self.assertIn(("environment egress-approval", "fail"), bad(run(t, {**CFG, "admin": "pal"})))
+
+    def test_codeowners_missing_is_fine_and_a_file_may_only_name_known_owners(self):
+        def file(text):
+            return (200, {"content": base64.b64encode(text.encode()).decode()})
+
+        p = f"/repos/{R}/contents/.github/CODEOWNERS"
+        t = good()
+        self.assertEqual(bad(run(t)), set())  # no file: the administrator owns everything
+        t[p] = file("# who reviews what\n* @H3mul\n/tools/ @h3mul\n/docs/\n")
+        self.assertEqual(bad(run(t)), set())
+        t[p] = file("* @H3mul\n/general/ @H3mul @stranger\n/ci/ @org/security\n")
+        self.assertEqual(bad(run(t)), {("CODEOWNERS", "fail")})
+        self.assertEqual(bad(run(t, {**CFG, "owners": ["stranger", "@org/security"]})), set())
+        t[p] = (200, {"content": "!!not base64!!"})
+        self.assertEqual(bad(run(t)), {("CODEOWNERS", "unknown")})
 
     def test_environment_and_tags(self):
         t = good()
-        t[f"/repos/{R}/environments/egress-approval"] = (200, {"protection_rules": []})
+        t[f"/repos/{R}/environments/egress-approval"] = (200, {"protection_rules": [
+            {"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "someone-else"}}]}]})
         t[f"/repos/{R}/rulesets?includes_parents=true"] = (200, [])
         self.assertEqual(bad(run(t)), {("environment egress-approval", "fail"), ("release tags protected", "warn")})
 
@@ -164,6 +186,16 @@ class Report(unittest.TestCase):
         self.assertIn(f"gh api -X PUT repos/{R}/branches/main/protection", text)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(sweep.main(["--policy", str(pol)], get=lambda p: good().get(p, (404, {}))), 0)
+
+    def test_a_policy_wide_administrator_overrides_the_repo_owner(self):
+        import contextlib
+        import io
+        pol = pathlib.Path(tempfile.mkdtemp()) / "p.toml"
+        pol.write_text(f'[admin]\nlogin = "pal"\n\n[[repo]]\nname = "{R}"\nchecks = ["check", "approve"]\n')
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = sweep.main(["--policy", str(pol)], get=lambda p: good().get(p, (404, {})))
+        self.assertEqual(rc, 1)
+        self.assertIn("unexpected direct collaborators: ['H3mul']", out.getvalue())
 
     def test_the_shipped_policy_parses_and_names_valid_repos(self):
         import tomllib
