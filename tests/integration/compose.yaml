@@ -78,6 +78,8 @@ services:
       TG_TOKEN_FILE: /run/identity/token
       GIT_SSL_CAINFO: /keys/tls.crt  # trust the stub's certificate for github.com
       WS_GITHUB_USERS: octo
+      WS_POLICY_REPO: octo/ta-policy
+      WS_GITHUB_API: http://stub:8000
       WS_GITHUB_WEB: http://stub:8000
     volumes:
       - ${TG_IT_DIR}/sandbox-token:/run/identity/token:ro

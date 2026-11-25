@@ -1,0 +1,43 @@
+# Runs the BASE branch's tools against the PR's files (pull_request_target), so a PR cannot change
+# the checks it is judged by. The PR head is only ever read as data, never executed.
+# `approve` waits on the `egress-approval` environment: a human presses "Review deployments".
+# The writer App token the agent holds has no `actions` permission, so it cannot press it.
+name: egress-policy
+on:
+  pull_request_target:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {path: base}
+      - uses: actions/checkout@v4
+        with:
+          path: head
+          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+      - name: Validate the allowlist and the generated policy
+        run: |
+          python3 base/tools/egress.py --root head validate
+          python3 base/tools/egress.py --root head check
+      - name: Permission diff comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python3 base/tools/egress.py diff base head > comment.md
+          others="$(gh pr diff "$PR" --name-only | grep -v -x -e egress/workspace.toml -e generated/workspace-egress.yaml || true)"
+          if [ -n "$others" ]; then
+            printf '\n:rotating_light: **This PR also changes:**\n```\n%s\n```\nReview those files as carefully as the policy itself.\n' "$others" >> comment.md
+          fi
+          gh pr comment "$PR" --body-file comment.md --edit-last --create-if-none
+  approve:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: egress-approval
+    steps:
+      - run: echo "approved by a reviewer of the egress-approval environment"

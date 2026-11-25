@@ -1,0 +1,51 @@
+# The workspace egress allowlist. Change it with a PR (see README); never edit generated/ by hand.
+
+[[host]]
+name = "api.anthropic.com"
+reason = "the LLM API"
+requested_by = "seed"
+
+[[host]]
+name = "api.github.com"
+reason = "GitHub API (PRs, gh)"
+requested_by = "seed"
+
+[[host]]
+name = "codeload.github.com"
+reason = "repository archives"
+requested_by = "seed"
+
+[[host]]
+name = "files.pythonhosted.org"
+reason = "Python package files"
+requested_by = "seed"
+
+[[host]]
+name = "github.com"
+reason = "git over HTTPS"
+requested_by = "seed"
+
+[[host]]
+name = "nodejs.org"
+reason = "Node.js downloads"
+requested_by = "seed"
+
+[[host]]
+name = "objects.githubusercontent.com"
+reason = "GitHub release assets (mise, tools)"
+requested_by = "seed"
+
+[[host]]
+name = "pypi.org"
+reason = "Python packages"
+requested_by = "seed"
+
+[[host]]
+name = "registry.npmjs.org"
+reason = "npm packages"
+requested_by = "seed"
+
+[[host]]
+name = "release-assets.githubusercontent.com"
+reason = "GitHub release assets (mise, tools)"
+requested_by = "seed"

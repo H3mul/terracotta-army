@@ -41,6 +41,7 @@ class FakeGitHub:
         self.writer_perms = {"contents": "write", "pull_requests": "write"}
         self.devices: dict[str, dict] = {}  # device_code -> {user_code, state}
         self.users: dict[str, dict] = {}  # parent user tokens
+        self.pulls: list[dict] = []  # pull requests opened through the API
         self.device_interval = 5  # seconds the device endpoint tells clients to wait
         self.slow_downs = 0  # next N polls answer slow_down
         self.ssh_keys: dict[str, list[str]] = {}  # login -> public key lines served at /<login>.keys
@@ -135,6 +136,15 @@ class FakeGitHub:
     def handle(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
         self.calls.append(f"{req.method} {path}")
+        m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/pulls", path)
+        if m and req.method == "POST":
+            t = self._bearer(req)
+            if not t or m[2] not in t["repos"] or t["perms"].get("pull_requests") != "write":
+                return httpx.Response(404)
+            body = json.loads(req.content)
+            self.pulls.append({"repo": f"{m[1]}/{m[2]}", "head": body["head"], "base": body["base"],
+                               "title": body["title"]})
+            return httpx.Response(201, json={"html_url": f"https://github.com/{m[1]}/{m[2]}/pull/{len(self.pulls)}"})
         m = re.fullmatch(r"/([^/]+)\.keys", path)
         if m:
             if m[1] not in self.ssh_keys:

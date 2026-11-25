@@ -22,7 +22,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 fake = FakeGitHub(pathlib.Path(os.environ["PUBKEY"]).read_text(),
-                  {1: ("octo", ["mine", "other", "secret", "specs"])})
+                  {1: ("octo", ["mine", "other", "secret", "specs", "ta-policy"])})
 fake.client_id = os.environ["CLIENT_ID"]
 fake.writer_secret = os.environ["WRITER_SECRET"]
 fake.device_interval = 1  # real GitHub says 5; the harness has no reason to wait that long
@@ -49,6 +49,7 @@ async def state(_: Request) -> Response:
                    for t in fake.tokens.values()],
         "live": sum(1 for t in fake.tokens.values() if not t["revoked"]),
         "devices": len(fake.devices),
+        "pulls": fake.pulls,
         "users_live": sum(1 for t in fake.users.values() if not t["revoked"]),
     })
 
@@ -81,15 +82,24 @@ EXTRA_FILES = {  # beyond README.md: a project that names its spec store, and th
 }
 
 
+def seed_tree(name: str) -> dict[str, str]:
+    """ta-policy starts as the policy-seed template (the egress allowlist and its tools)."""
+    if name != "ta-policy":
+        return {}
+    root = pathlib.Path("/seed")
+    return {str(p.relative_to(root)): p.read_text() for p in root.rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts}
+
+
 def seed_repos() -> None:
-    for name in ("mine", "other", "secret", "specs"):
+    for name in ("mine", "other", "secret", "specs", "ta-policy"):
         bare = GIT_ROOT / "octo" / f"{name}.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
         with tempfile.TemporaryDirectory() as w:
             def g(*a):
                 subprocess.run(["git", "-C", w, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True)
             g("init", "-q", "-b", "main")
-            files = {"README.md": f"octo/{name}\n", **EXTRA_FILES.get(name, {})}
+            files = {"README.md": f"octo/{name}\n", **EXTRA_FILES.get(name, {}), **seed_tree(name)}
             for rel, text in files.items():
                 f = pathlib.Path(w, rel)
                 f.parent.mkdir(parents=True, exist_ok=True)

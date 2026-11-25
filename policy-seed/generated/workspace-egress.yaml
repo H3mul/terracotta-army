@@ -1,0 +1,64 @@
+{
+  "apiVersion": "cilium.io/v2",
+  "kind": "CiliumNetworkPolicy",
+  "metadata": {
+    "name": "workspace-egress-allowlist",
+    "namespace": "terracotta-army",
+    "annotations": {
+      "terracotta-army/generated-from": "egress/workspace.toml; do not edit"
+    }
+  },
+  "spec": {
+    "endpointSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "workspace"
+      }
+    },
+    "egress": [
+      {
+        "toFQDNs": [
+          {
+            "matchName": "api.anthropic.com"
+          },
+          {
+            "matchName": "api.github.com"
+          },
+          {
+            "matchName": "codeload.github.com"
+          },
+          {
+            "matchName": "files.pythonhosted.org"
+          },
+          {
+            "matchName": "github.com"
+          },
+          {
+            "matchName": "nodejs.org"
+          },
+          {
+            "matchName": "objects.githubusercontent.com"
+          },
+          {
+            "matchName": "pypi.org"
+          },
+          {
+            "matchName": "registry.npmjs.org"
+          },
+          {
+            "matchName": "release-assets.githubusercontent.com"
+          }
+        ],
+        "toPorts": [
+          {
+            "ports": [
+              {
+                "port": "443",
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

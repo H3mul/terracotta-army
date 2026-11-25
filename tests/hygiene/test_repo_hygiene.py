@@ -12,7 +12,7 @@ PATTERNS = {
     "internal hostname": re.compile(r"\b[\w-]+\.(?:lan|home\.arpa|internal|corp)\b"),
     "GitHub token": re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
     "private key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----\s*[A-Za-z0-9+/=\s]{60,}"),  # a body, not a bare header
-    "email": re.compile(r"[\w.+-]+@(?!example\.(?:com|org)\b|users\.noreply\.github\.com\b|github\.com\b|anthropic\.com\b)[\w-]+\.[a-z]{2,}\b"),
+    "email": re.compile(r"[\w.+-]+@(?!example\.(?:com|org)\b|users\.noreply\.github\.com\b|github\.com\b|anthropic\.com\b|openssh\.com\b)[\w-]+\.[a-z]{2,}\b"),
 }
 
 

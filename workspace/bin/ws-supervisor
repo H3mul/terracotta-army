@@ -36,7 +36,8 @@ PORT = 2222
 # What git and ws need inside SSH sessions (sshd does not pass the container environment).
 # Never an API key.
 PASS_TO_SESSIONS = ("PATH", "TG_BROKER", "TG_TOKEN_FILE", "TG_CONTRACT_FILE", "GIT_TERMINAL_PROMPT", "WS_ROOT",
-                    "GIT_SSL_CAINFO", "WS_GITHUB_USERS", "WS_GITHUB_WEB", "SSL_CERT_FILE")
+                    "GIT_SSL_CAINFO", "WS_GITHUB_USERS", "WS_GITHUB_WEB", "SSL_CERT_FILE", "WS_POLICY_REPO",
+                    "WS_GITHUB_API")
 CRASH_WINDOW, CRASH_LIMIT = 60.0, 5
 
 

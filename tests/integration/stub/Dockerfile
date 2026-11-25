@@ -3,4 +3,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 RUN pip install --no-cache-dir starlette uvicorn httpx pyjwt cryptography
 WORKDIR /stub
 COPY general/tests/fake_github.py tests/integration/stub/server.py ./
+COPY policy-seed /seed
 CMD ["python", "server.py"]

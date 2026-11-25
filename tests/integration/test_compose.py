@@ -23,7 +23,7 @@ POLICY = """
 read:
   standing: {allow: ["octo/mine", "octo/specs"], deny: ["octo/secret"]}
   adhoc: {allow: ["octo/*"], max_ttl: 1h}
-write: {allow: ["octo/other"], max_ttl: 1h, default_ttl: 20m}
+write: {allow: ["octo/other", "octo/ta-policy"], max_ttl: 1h, default_ttl: 20m}
 """
 
 
@@ -493,3 +493,43 @@ def test_26_ssh_keys_follow_the_github_account_for_operator_and_workspace(h, env
     assert rc != 0 and "previous keys stay in force" in out
     assert ssh_with_second("tg@sshd", "status")[0] == 0
     assert h.ws_ssh("ws keys refresh")[0] != 0 and h.ws_ssh("true")[0] == 0
+
+
+def test_27_blocked_host_becomes_an_egress_pr_only_with_a_write_grant(h):
+    r = h.sh("ws egress request crates.io --reason 'Rust crates'")
+    assert r.returncode != 0 and "grant read octo/ta-policy" in r.stderr, r.stderr  # cannot even read the repo
+
+    seen = h.state()["devices"]
+    p = start_op(h, "setup", "octo/ta-policy", "--write")
+    wait_for(lambda: h.state()["devices"] > seen, "the device code")
+    phone(h)
+    assert p.communicate(timeout=60)[1] is None and p.returncode == 0
+
+    r = h.sh("ws egress request 192.0.2.1 --reason 'the router'")
+    assert r.returncode == 1 and "IP addresses are not allowed" in r.stderr, r.stderr
+    r = h.sh("ws egress request printer.local --reason 'x'")
+    assert r.returncode == 1 and "internal names" in r.stderr
+    assert h.state()["pulls"] == []
+
+    r = h.sh("ws egress request crates.io --reason 'Rust crates'")
+    assert r.returncode == 0 and "opened https://github.com/octo/ta-policy/pull/1" in r.stdout, r.stdout + r.stderr
+    pulls = h.state()["pulls"]
+    assert len(pulls) == 1 and pulls[0]["head"].startswith("egress/crates-io-") and pulls[0]["base"] == "main"
+
+    branch = pulls[0]["head"]
+    r = h.sh(f"cd /tmp && rm -rf pol && git clone -q https://github.com/octo/ta-policy.git pol && cd pol && git fetch -q origin {branch} "
+             f"&& git show FETCH_HEAD:egress/workspace.toml | grep -A1 crates.io && git show FETCH_HEAD:generated/workspace-egress.yaml "
+             f"| grep crates.io && git log -1 --format=%B FETCH_HEAD && git diff --name-only origin/main FETCH_HEAD")
+    assert r.returncode == 0, r.stderr
+    assert "Agent-authored: terracotta-workspace" in r.stdout
+    assert [x for x in r.stdout.splitlines() if x.endswith((".toml", ".yaml"))][-2:] == [
+        "egress/workspace.toml", "generated/workspace-egress.yaml"]  # nothing but the two files
+
+    r = h.sh("ws egress request crates.io --reason 'again'")  # branch exists but main does not have it yet
+    assert r.returncode == 0 and h.state()["pulls"].__len__() == 2  # a second request is a second PR, not a crash
+
+    assert "revoked" in h.op("revoke", "octo/ta-policy", "write")[1]
+    r = h.sh("ws egress request pypi.org --reason 'x'")  # already allowed: no push needed
+    assert r.returncode == 0 and "already allowed" in r.stdout
+    r = h.sh("ws egress request example.org --reason 'x'")
+    assert r.returncode != 0 and "grant write octo/ta-policy" in r.stderr  # the operator's command is named
