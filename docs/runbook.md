@@ -66,6 +66,17 @@ One image, two containers in one pod (or two services in Compose): the daemon an
 | `TG_AUDIT_FILE` | optional audit file (the audit log always goes to stdout); set it on both containers, on the shared state volume, so `log` works over SSH |
 | `TG_ADMIN_SOCKET` | admin unix socket, shared with the sshd container (default `/run/terracotta/admin.sock`) |
 
+On the homelab cluster (Flux repo `cluster/terracotta-army/`) the broker's GitHub secret is sealed straight from the files, so the plain secret never lands on disk:
+
+```
+kubectl create secret generic terracotta-general-github -n terracotta-army \
+  --from-file=reader.pem=<reader key>.pem --from-file=writer-secret=<file holding the writer client secret> \
+  --dry-run=client -o yaml | kubeseal --cert sealed-secrets.pem -o yaml \
+  > cluster/terracotta-army/sealed-secret-terracotta-general-github.yaml
+```
+
+Then set the image tag and digest from the release notes, put your public keys in the authorized-keys ConfigMap, and set the HelmRelease's `suspend` to `false`.
+
 The sshd container needs your public key(s) at `/etc/terracotta/authorized_keys`, and a volume at `/var/lib/terracotta-ssh` so its host key persists. Run both containers read-only, as non-root, with no capabilities (the Compose harness does).
 
 The workspace calls the broker with its projected ServiceAccount token (audience `terracotta-general`); the broker checks it with TokenReview, so its ServiceAccount needs only the `system:auth-delegator` role.
