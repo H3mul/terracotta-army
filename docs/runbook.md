@@ -1,6 +1,6 @@
 # Operator runbook
 
-What you do by hand, in order. Write access (`grant write`) is not built yet; this covers the read path.
+What you do by hand, in order.
 
 ## 1. Create the reader GitHub App
 
@@ -15,7 +15,7 @@ On the GitHub account or organisation that owns the repositories:
 7. Install the App on the account and choose the repositories it may ever see (the policy narrows further, but the App's installation is the outer limit).
    "All repositories" also covers repositories and forks you create later (checked: narrowed tokens still come back as `selected`), but then a leaked key reads every private repository you own, and only the policy narrows it. "Only select repositories" keeps GitHub's own limit.
 
-### The writer App (only needed once `grant write` exists)
+### The writer App (needed for `grant write`)
 
 A second App, so the key the broker holds stays read-only:
 
@@ -23,6 +23,7 @@ A second App, so the key the broker holds stays read-only:
 2. Leave **Expire user authorization tokens** enabled.
 3. Generate a **client secret**. It is the only secret the broker holds for write. Do **not** generate a private key for this App.
 4. Install it on the repositories you will ever want to write to. Write grants are still one repository at a time and phone-approved.
+5. Give the broker its Client ID and the client secret (see step 3). Without both, the write tier is off and `grant write` says so.
 
 ## 2. Write the policy
 
@@ -36,8 +37,11 @@ read:
   adhoc:                    # readable only on request, for a limited time
     allow: ["me/*"]
     max_ttl: 4h
-write:                      # reserved: write grants are not built yet
-  allow: []
+write:                      # phone-approved, one repo at a time
+  allow: ["me/*"]
+  deny:  ["me/dotfiles"]
+  max_ttl: 2h
+  default_ttl: 30m
 limits:                     # optional, rolling 24h, ad hoc only (defaults shown)
   grants_per_day: 20
   mints_per_day: 60
@@ -56,6 +60,8 @@ One image, two containers in one pod (or two services in Compose): the daemon an
 | `TG_POLICY` | path to the policy file (the proposal) |
 | `TG_SANDBOX_IDENTITY` | the one ServiceAccount allowed to call the sandbox API, `system:serviceaccount:<ns>:<name>` |
 | `TG_READER_CLIENT_ID`, `TG_READER_KEY` | the App's Client ID, and the path to its PEM |
+| `TG_WRITER_CLIENT_ID`, `TG_WRITER_SECRET` | the writer App's Client ID, and the path to a file holding its client secret (both, or the write tier is off) |
+| `TG_WRITE_TOKENS` | where live write tokens are kept until revoked (default `write-tokens.json` beside `TG_STATE`; 0600, broker volume only) |
 | `TG_STATE` | where the approved policy and stop flag persist; mount a small volume (default `/var/lib/terracotta/state.json`) |
 | `TG_AUDIT_FILE` | optional audit file (the audit log always goes to stdout); set it on both containers, on the shared state volume, so `log` works over SSH |
 | `TG_ADMIN_SOCKET` | admin unix socket, shared with the sshd container (default `/run/terracotta/admin.sock`) |
@@ -90,10 +96,14 @@ If the proposal changes after you looked, `approve` refuses and you review again
 
 ```
 grant read owner/repo [30m]   # time-boxed read of a private repo outside the standing list
-revoke owner/repo             # take it back now (the token is revoked at GitHub too)
+grant write owner/repo [30m]  # prints a code: open github.com/login/device on your phone and enter it
+setup owner/repo --write      # read grant if needed, then write, then the `ws clone` line for the sandbox
+revoke owner/repo [write]    # take it back now (the token is revoked at GitHub too)
 log --since 1h                # recent events (needs the audit file)
 log --verify                  # check the audit hash chain
 ```
+
+`grant write` waits up to 5 minutes for you to approve on GitHub's page (check it names the writer App), then exits 0 (granted), 3 (denied) or 4 (expired). The broker narrows the approved token to that one repo, revokes the parent at once, and revokes the narrowed token when the grant ends. GitHub gives that token 8 hours regardless of the TTL you chose, so the revoke is what enforces it; `log --verify` and the audit show every attempt.
 
 When a workspace git command fails, its message begins `terracotta:` and names the command to run here. Run that command; the agent retries.
 
@@ -106,15 +116,18 @@ resume    # lifts it; standing read refreshes
 
 `stop` survives a restart. If it prints `INCOMPLETE`, serving is already blocked locally; run it again once GitHub is reachable.
 
-## 8. Rotating the reader key
+## 8. Rotating keys
 
 1. In the App settings generate a new private key.
 2. Replace the secret the broker mounts and restart the broker (grants are in memory and end; standing read refreshes on start).
 3. Delete the old key in the App settings.
 
+The writer App has no key. To rotate its client secret: generate a new one in the App settings, replace the file the broker mounts, restart the broker (a restart revokes any write token still held, using the old secret first, so rotate when no write grant is open), then delete the old secret.
+
 ## 9. Things to know
 
-- Tokens cannot be limited to a branch. Protect the default branch of every repository the sandbox can write to (when write exists). `check` reports it.
+- Tokens cannot be limited to a branch. Protect the default branch of every repository the sandbox can write to. `check` reports it.
 - Standing read lets the agent read every allowlisted repository and send it to anything the egress policy allows, at least the LLM API. Keep the allowlist narrow.
-- A broker restart ends all grants. Standing read comes back within a minute.
+- A broker restart ends all grants (write tokens still held are revoked at startup). Standing read comes back within a minute.
+- Live write tokens are the one thing the broker writes to disk (`write-tokens.json`, 0600, on its own volume), so that a crash cannot leave one unrevocable. Keep that volume off the sandbox's reach.
 - Audit tail truncation is not detectable by the chain alone; ship the stdout stream to durable storage.

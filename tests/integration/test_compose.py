@@ -1,4 +1,4 @@
-"""Container-level scenarios (ta-repo-layout 3.2, minus write until ta-general section 3).
+"""Container-level scenarios (ta-repo-layout 3.2).
 
 Run: uv run --project general pytest tests/integration -v   (needs docker; builds the images)
 """
@@ -23,6 +23,7 @@ POLICY = """
 read:
   standing: {allow: ["octo/mine", "octo/specs"], deny: ["octo/secret"]}
   adhoc: {allow: ["octo/*"], max_ttl: 1h}
+write: {allow: ["octo/other"], max_ttl: 1h, default_ttl: 20m}
 """
 
 
@@ -38,6 +39,7 @@ def env(tmp_path_factory):
     (d / "reader.pub").write_text(pub)
     (d / "policy.yaml").write_text(POLICY)
     (d / "broker-token").write_text("broker-token")
+    (d / "writer-secret").write_text("it-writer-secret")
     (d / "sandbox-token").write_text("sandbox-token")
     run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=github.com",
          "-addext", "subjectAltName=DNS:github.com", "-keyout", str(d / "tls.key"), "-out", str(d / "tls.crt")],
@@ -134,9 +136,11 @@ def test_04_sandbox_identity_and_contract_are_enforced(h):
     assert h.cred("octo/mine", contract="0")[0] == 426
 
 
-def test_05_writer_username_is_not_served_yet(h):
-    code, body = h.cred("octo/mine", username="writer")
+def test_05_writer_username_is_not_served_without_a_grant(h):
+    code, body = h.cred("octo/mine", username="writer")  # not in the write policy at all
     assert code == 403 and "write refused" in body["hint"]
+    code, body = h.cred("octo/other", username="writer")  # allowed by policy, nothing granted
+    assert code == 403 and "terracotta-general grant write octo/other" in body["hint"]
 
 
 def test_06_adhoc_grant_serves_then_revoke_kills_the_token(h):
@@ -362,8 +366,84 @@ def test_23_product_containers_run_hardened(h, env):
 
 def test_24_I1_no_key_material_or_broker_secret_in_the_workspace(h):
     env_dump = h.exec("sandbox", "env").stdout
-    assert "TG_READER" not in env_dump and "PRIVATE KEY" not in env_dump and "ghs_" not in env_dump
-    r = h.sh("grep -rIl --exclude-dir=.ssh-host -e 'BEGIN [A-Z ]*PRIVATE KEY' -e ghs_ -e ghp_ /workspace /home/agent /tmp /etc/terracotta-workspace "
+    assert "TG_READER" not in env_dump and "TG_WRITER" not in env_dump and "PRIVATE KEY" not in env_dump and "ghs_" not in env_dump
+    r = h.sh("grep -rIl --exclude-dir=.ssh-host -e 'BEGIN [A-Z ]*PRIVATE KEY' -e ghs_ -e ghu_ -e ghp_ /workspace /home/agent /tmp /etc/terracotta-workspace "
              "/run /opt/tools/package.json 2>/dev/null; ls /etc/terracotta /run/terracotta 2>&1 | head -2; true")
     assert "PRIVATE KEY" not in r.stdout and not [ln for ln in r.stdout.splitlines() if ln.startswith("/")], r.stdout
     assert h.ws_ssh("env")[1].count("ghs_") == 0 and "reader" not in h.ws_ssh("env")[1].lower()
+
+
+def phone(h, how="approved"):
+    h.exec("sandbox", "curl", "-s", "-X", "POST", f"http://stub:8000/_approve?how={how}")
+
+
+def start_op(h, *args):
+    """An operator command that waits on the phone, so it runs in the background."""
+    return subprocess.Popen(
+        [*h.compose, "exec", "-T", "operator", "ssh", "-i", "/key", "-o", "StrictHostKeyChecking=no",
+         "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-p", "2222", "tg@sshd", *args],
+        env=h.e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def write_tokens(h):
+    return [t for t in h.state()["tokens"] if t["perms"].get("contents") == "write" and not t["revoked"]]
+
+
+COMMIT = ("export GIT_AUTHOR_NAME=a GIT_COMMITTER_NAME=a GIT_AUTHOR_EMAIL=agent GIT_COMMITTER_EMAIL=agent; "
+          "git checkout -q -b {b} && echo {b} > f && git add f && git commit -q -m x && ")
+
+
+def test_25_write_push_end_to_end(h, env):
+    compose, e, _ = env
+    # setup: read grant, then the device flow; the phone approves while the command waits
+    seen = h.state()["devices"]
+    p = start_op(h, "setup", "octo/other", "--write")
+    wait_for(lambda: h.state()["devices"] > seen, "the device code")
+    phone(h)
+    out, _ = p.communicate(timeout=60)
+    assert p.returncode == 0 and "ABCD-1234" in out and "granted write on octo/other" in out, out
+    assert "ws clone octo/other" in out
+
+    # exactly one live write token, for one repo, parent gone, token file 0600 on the broker only
+    live = write_tokens(h)
+    assert len(live) == 1 and live[0]["repos"] == ["other"]
+    assert live[0]["perms"] == {"contents": "write", "pull_requests": "write"}
+    assert h.state()["users_live"] == 0
+    assert h.exec("broker", "stat", "-c", "%a", "/var/lib/terracotta/write-tokens.json").stdout.strip() == "600"
+    assert h.exec("sandbox", "ls", "/var/lib/terracotta").returncode != 0
+
+    # the agent pushes through the helper; nothing credential-shaped lands in the workspace
+    r = h.sh("ws clone octo/other wp && cd /workspace/dev/wp && " + COMMIT.format(b="agent/one") + "git push origin agent/one")
+    assert r.returncode == 0, r.stderr
+    r = h.sh("cd /workspace/dev/wp && git ls-remote origin agent/one && git log -1 --format=%B")
+    assert "refs/heads/agent/one" in r.stdout and "Agent-authored: terracotta-workspace" in r.stdout, r.stdout + r.stderr
+    leak = h.sh("grep -rIl -e ghu_ /workspace /home/agent /tmp 2>/dev/null; true")
+    assert leak.stdout.strip() == ""
+
+    # write on another repo is not served, and a push there ends in the broker's hint
+    assert h.cred("octo/mine", username="writer")[0] == 403
+    r = h.sh("cd /workspace/dev/mine && " + COMMIT.format(b="agent/two") + "git push origin agent/two")
+    assert r.returncode != 0 and "write refused" in r.stderr, r.stderr
+
+    # revoke ends it at GitHub, and the next push says how to get it back
+    assert "revoked 1" in h.op("revoke", "octo/other", "write")[1]
+    assert write_tokens(h) == []
+    r = h.sh("cd /workspace/dev/wp && " + COMMIT.format(b="agent/three").replace("git checkout -q -b", "git checkout -q -B")
+             + "git push origin agent/three")
+    assert r.returncode != 0 and "grant write octo/other" in r.stderr, r.stderr
+
+    # a denied approval leaves nothing; a restart revokes what the last run left behind
+    seen = h.state()["devices"]
+    p = start_op(h, "grant", "write", "octo/other")
+    wait_for(lambda: h.state()["devices"] > seen, "a second device code")
+    phone(h, "denied")
+    out, _ = p.communicate(timeout=60)
+    assert p.returncode == 3 and "device-denied" in out and write_tokens(h) == []
+    seen = h.state()["devices"]
+    p = start_op(h, "grant", "write", "octo/other", "10m")
+    wait_for(lambda: h.state()["devices"] > seen, "a third device code")
+    phone(h)
+    assert p.communicate(timeout=60)[0].count("granted write") == 1 and len(write_tokens(h)) == 1
+    run([*compose, "restart", "broker"], env=e)
+    wait_for(lambda: write_tokens(h) == [], "the restarted broker to revoke the leftover token")
+    assert h.cred("octo/other", username="writer")[0] == 403  # nothing is served after the restart

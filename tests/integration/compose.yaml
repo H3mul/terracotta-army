@@ -16,6 +16,9 @@ x-broker-env: &broker-env
   TG_READER_CLIENT_ID: Iv-it
   TG_READER_KEY: /etc/terracotta/reader.pem
   TG_GITHUB_API: http://stub:8000
+  TG_GITHUB_WEB: http://stub:8000
+  TG_WRITER_CLIENT_ID: Iv-it  # the stub serves both Apps under one client id
+  TG_WRITER_SECRET: /etc/terracotta/writer-secret
   TG_KUBE_API: http://stub:8000
   TG_KUBE_TOKEN: /etc/terracotta/broker-token
   TG_LISTEN_PORT: "8080"
@@ -24,7 +27,7 @@ x-broker-env: &broker-env
 services:
   stub:
     build: {context: ../.., dockerfile: tests/integration/stub/Dockerfile}
-    environment: {PUBKEY: /keys/reader.pub, CLIENT_ID: Iv-it}
+    environment: {PUBKEY: /keys/reader.pub, CLIENT_ID: Iv-it, WRITER_SECRET: it-writer-secret}
     volumes: ["${TG_IT_DIR}:/keys:ro"]
     networks: {default: {aliases: [github.com]}}  # git clients reach it as github.com over TLS
 
@@ -36,6 +39,7 @@ services:
       - ${TG_IT_DIR}/policy.yaml:/etc/terracotta/policy.yaml:ro
       - ${TG_IT_DIR}/reader.pem:/etc/terracotta/reader.pem:ro
       - ${TG_IT_DIR}/broker-token:/etc/terracotta/broker-token:ro
+      - ${TG_IT_DIR}/writer-secret:/etc/terracotta/writer-secret:ro
       - admin:/run/terracotta
       - state:/var/lib/terracotta
     depends_on: [stub]

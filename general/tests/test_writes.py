@@ -176,7 +176,7 @@ def test_a_restart_revokes_what_the_last_run_left(tmp_path):
         r.make()  # new process, same disk, empty request store
         r.store = RequestStore(r.clk)
         r.make()
-        assert r.w.outstanding() == 1
+        assert r.w.outstanding() == 1 and await r.w.token_for("octo/a") is None  # nothing served after a restart
         await r.w.sweep()
         assert not r.live() and r.w.outstanding() == 0
 

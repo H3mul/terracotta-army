@@ -24,6 +24,7 @@ from starlette.routing import Route
 fake = FakeGitHub(pathlib.Path(os.environ["PUBKEY"]).read_text(),
                   {1: ("octo", ["mine", "other", "secret", "specs"])})
 fake.client_id = os.environ["CLIENT_ID"]
+fake.writer_secret = os.environ["WRITER_SECRET"]
 BROKER_TOKEN = "broker-token"
 IDENTITIES = {"sandbox-token": "system:serviceaccount:ws:sandbox",
               "intruder-token": "system:serviceaccount:ws:intruder"}
@@ -46,7 +47,15 @@ async def state(_: Request) -> Response:
         "tokens": [{"repos": t["repos"], "perms": t["perms"], "revoked": t["revoked"]}
                    for t in fake.tokens.values()],
         "live": sum(1 for t in fake.tokens.values() if not t["revoked"]),
+        "devices": len(fake.devices),
+        "users_live": sum(1 for t in fake.users.values() if not t["revoked"]),
     })
+
+
+async def approve(request: Request) -> Response:
+    """The operator's phone: approve (or deny) the newest device code."""
+    fake.approve(request.query_params.get("how", "approved"))
+    return Response(status_code=204)
 
 
 async def protect(request: Request) -> Response:
@@ -138,6 +147,7 @@ app = Starlette(routes=[
     Route("/apis/authentication.k8s.io/v1/tokenreviews", tokenreview, methods=["POST"]),
     Route("/_state", state),
     Route("/_protect", protect, methods=["POST"]),
+    Route("/_approve", approve, methods=["POST"]),
     Route("/{path:path}", github, methods=["GET", "POST", "PUT", "DELETE"]),
 ])
 
