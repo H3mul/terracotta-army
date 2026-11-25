@@ -28,9 +28,14 @@ read:
     max_ttl: 4h
 write:                      # reserved: write grants are not built yet
   allow: []
+limits:                     # optional, rolling 24h, ad hoc only (defaults shown)
+  grants_per_day: 20
+  mints_per_day: 60
 ```
 
 Patterns are `owner/repo` globs, case-insensitive. `deny` always wins, and also blocks ad hoc grants.
+Over a limit, grants are refused and audited; `check` shows usage. Counts reset on restart.
+`log --verify` also lists mints or revokes that were started but never finished (a crash mid-call).
 
 ## 3. Run the broker
 

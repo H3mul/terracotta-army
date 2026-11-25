@@ -83,3 +83,42 @@ def test_repo_set_mismatch_is_too_broad():
     app._http._transport = httpx.MockTransport(lying)
     with pytest.raises(GitHubError, match="too-broad"):
         run(app.installation_token(1, ["a"], {"contents": "read"}))
+
+
+def test_mint_and_revoke_are_logged_before_the_call_and_again_after():
+    import io
+
+    from terracotta_general.audit import AuditLog
+
+    fake, _ = make()
+    buf, seen = io.StringIO(), []
+    audit = AuditLog(buf)
+    app = App(fake.client_id, PRIV, fake.client(), audit=audit)
+    real = app._call
+
+    async def spy(method, path, bearer, **kw):
+        seen.append(buf.getvalue().count('"state":"started"') - buf.getvalue().count('"state":"done"'))
+        return await real(method, path, bearer, **kw)
+
+    app._call = spy
+    t = run(app.installation_token(1, ["a"], {"contents": "read"}))
+    run(app.revoke(t))
+    recs = [json.loads(x) for x in buf.getvalue().splitlines()]
+    assert [(r["event"], r["state"]) for r in recs] == [
+        ("mint", "started"), ("mint", "done"), ("revoke_token", "started"), ("revoke_token", "done")]
+    assert seen[-2:] == [1, 1]  # an unfinished `started` existed when each request went out
+    assert "ghs_" not in buf.getvalue()
+
+
+def test_refused_mint_is_logged_failed():
+    import io
+
+    from terracotta_general.audit import AuditLog
+
+    fake, _ = make()
+    buf = io.StringIO()
+    app = App(fake.client_id, PRIV, fake.client(), audit=AuditLog(buf))
+    with pytest.raises(GitHubError):
+        run(app.installation_token(99, ["a"], {"contents": "read"}))
+    states = [json.loads(x)["state"] for x in buf.getvalue().splitlines()]
+    assert states == ["started", "failed"]

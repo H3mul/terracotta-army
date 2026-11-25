@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import calendar
+import itertools
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx
 import jwt
+
+from terracotta_general.audit import AuditLog
 
 API = "https://api.github.com"
 HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -39,9 +42,16 @@ class App:
         http: httpx.AsyncClient,
         base: str = API,
         clock: Callable[[], float] = time.time,
+        audit: AuditLog | None = None,
     ):
         self.client_id, self._key, self._http, self._base, self._clock = (
             client_id, private_key_pem, http, base, clock)
+        self._audit, self._ops = audit, itertools.count(1)
+
+    def _log(self, event: str, op: str, state: str, **fields: str | int) -> None:
+        """Write-ahead: `started` is logged before the call, `done` or `failed` after."""
+        if self._audit:
+            self._audit.write(event, op=op, state=state, **fields)
 
     def _app_jwt(self) -> str:
         now = int(self._clock())
@@ -76,6 +86,20 @@ class App:
         return r.json()["id"]
 
     async def installation_token(
+        self, installation_id: int, repositories: list[str] | None, permissions: dict[str, str]
+    ) -> Token:
+        op = f"m{next(self._ops)}"
+        what = f"{len(repositories)} repos" if repositories is not None else "listing"
+        self._log("mint", op, "started", installation=installation_id, reason=what)
+        try:
+            token = await self._mint(installation_id, repositories, permissions)
+        except GitHubError as e:
+            self._log("mint", op, "failed", installation=installation_id, reason=str(e))
+            raise
+        self._log("mint", op, "done", installation=installation_id, reason=what)
+        return token
+
+    async def _mint(
         self, installation_id: int, repositories: list[str] | None, permissions: dict[str, str]
     ) -> Token:
         body: dict = {"permissions": permissions}
@@ -135,7 +159,14 @@ class App:
             raise GitHubError("github-refused")
 
     async def revoke(self, token: Token) -> None:
-        await self._call("DELETE", "/installation/token", token.value)
+        op = f"r{next(self._ops)}"
+        self._log("revoke_token", op, "started")
+        try:
+            r = await self._call("DELETE", "/installation/token", token.value)
+        except GitHubError as e:
+            self._log("revoke_token", op, "failed", reason=str(e))
+            raise
+        self._log("revoke_token", op, "done" if r.status_code == 204 else "failed", status=r.status_code)
 
 
 _RANK = {"read": 1, "write": 2, "admin": 3}

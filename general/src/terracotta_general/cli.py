@@ -9,7 +9,7 @@ from typing import Annotated
 import httpx
 import typer
 
-from terracotta_general.audit import AuditError, verify
+from terracotta_general.audit import AuditError, unfinished, verify
 from terracotta_general.policy import parse_ttl
 from terracotta_general.repo import parse_repo
 
@@ -110,6 +110,8 @@ def check(repo: Repo) -> None:
     for k in ("standing", "read", "write"):
         typer.echo(f"{k:9} {out[k]}")
     typer.echo(f"protection {out['protection']}")
+    for k, v in out.get("limits", {}).items():
+        typer.echo(f"ad hoc {k}: {v}")
     typer.echo(f"standing token held: {out['standing_token']}")
     for a in out["active"]:
         typer.echo(f"active grant: {a['id']} ({a['level']})")
@@ -136,6 +138,9 @@ def log(
     if check:
         try:
             typer.echo(f"chain ok: {verify(lines)} records")
+            for r in unfinished(lines):
+                where = "cut off by a crash" if r["crashed"] else "no outcome yet (in flight or crashed)"
+                typer.echo(f"UNFINISHED {r['event']} op {r['op']} at {r['ts']}: {where}")
         except AuditError as e:
             typer.echo(f"CHAIN BROKEN: {e}", err=True)
             raise typer.Exit(1) from None

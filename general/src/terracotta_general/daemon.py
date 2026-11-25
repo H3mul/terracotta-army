@@ -38,7 +38,7 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
     audit = AuditLog(*sinks, prev=prev, seq=seq)
     store = RequestStore()
     app = App(settings.reader_client_id, pathlib.Path(settings.reader_key_path).read_text(),
-              http or httpx.AsyncClient(timeout=10.0), base=settings.github_api)
+              http or httpx.AsyncClient(timeout=10.0), base=settings.github_api, audit=audit)
     active = life.policy
     return Broker(
         policy=active,

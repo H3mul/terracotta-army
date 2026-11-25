@@ -132,3 +132,13 @@ def test_I10_nothing_that_grants_access_is_written_to_disk(rig):
     fresh = Broker(lambda: b.life.policy(), RequestStore(), b.audit, Auth(), SANDBOX)
     assert fresh.store.active() == []  # a restarted broker starts with no grants
     assert b.standing.token_for("octo/mine") and "ghs_" not in (tmp / "s.json").read_text()
+
+
+def test_only_github_py_talks_to_the_mutation_endpoints():
+    """I5, structurally: mint, revoke and suspend requests, and the App JWT, live in github.py alone."""
+    forbidden = ("access_tokens", "installation/token", "/suspended", "import jwt", "from jwt")
+    for f in SRC.glob("*.py"):
+        if f.name == "github.py":
+            continue
+        text = f.read_text()
+        assert not [w for w in forbidden if w in text], f"{f.name} must go through github.App"

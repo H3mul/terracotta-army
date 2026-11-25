@@ -104,3 +104,29 @@ def test_revoke_all():
     fake, _, _, g, _ = setup()
     run(g.grant_read("octo/other", None, "op"))
     assert run(g.revoke_all()) == 1 and not live_tokens(fake)
+
+
+def test_daily_grant_limit_refuses_audits_and_recovers_after_a_day():
+    clk, fake = Clock(), FakeGitHub(PUB, {1: ("octo", ["a", "b", "c"])}, clock=Clock())
+    pol = Policy.load('read: {adhoc: {allow: ["octo/*"]}}\nlimits: {grants_per_day: 2}')
+    buf = io.StringIO()
+    g = Grants(App(fake.client_id, PRIV, fake.client()), RequestStore(clk), lambda: pol, AuditLog(buf), clk)
+    run(g.grant_read("octo/a", None, "operator"))
+    run(g.grant_read("octo/b", None, "operator"))
+    with pytest.raises(PermissionError, match="daily limit of 2 ad hoc grants"):
+        run(g.grant_read("octo/c", None, "operator"))
+    assert "daily limit of 2 grants reached" in buf.getvalue()
+    assert g.usage()["grants"] == "2/2 in the last 24h"
+    clk.t += 86401
+    run(g.grant_read("octo/c", None, "operator"))
+
+
+def test_daily_mint_limit_keeps_the_old_token_instead_of_failing():
+    clk, fake = Clock(), FakeGitHub(PUB, {1: ("octo", ["a"])}, clock=Clock())
+    pol = Policy.load('read: {adhoc: {allow: ["octo/*"]}}\nlimits: {mints_per_day: 1}')
+    g = Grants(App(fake.client_id, PRIV, fake.client()), RequestStore(clk), lambda: pol, AuditLog(io.StringIO()), clk)
+    run(g.grant_read("octo/a", None, "operator"))
+    first = run(g.token_for("octo/a"))
+    clk.t = first.expires_at - 1  # near expiry, remint wanted but over the cap
+    fake.clock = clk
+    assert run(g.token_for("octo/a")) is first

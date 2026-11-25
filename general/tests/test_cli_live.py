@@ -24,10 +24,10 @@ runner = CliRunner()
 @pytest.fixture
 def broker(monkeypatch, tmp_path):
     fake = FakeGitHub(PUB, {1: ("octo", ["mine", "other"])})
-    app = App(fake.client_id, PRIV, fake.client())
     store = RequestStore()
     log_file = tmp_path / "audit.log"
     audit = AuditLog(io.StringIO(), log_file.open("a"))
+    app = App(fake.client_id, PRIV, fake.client(), audit=audit)
     b = Broker(lambda: POLICY, store, audit, None, "sa",
                StandingRead(app, lambda: POLICY, audit), Grants(app, store, lambda: POLICY, audit))
     asyncio.run(b.standing.refresh())

@@ -55,8 +55,6 @@ class StandingRead:
                 tok = await self._app.installation_token(inst.id, chunk, READ_PERMS)
                 for n in chunk:
                     new[f"{inst.login}/{n}".lower()] = tok
-                self._audit.write("mint", level="standing", installation=inst.id,
-                                  reason=f"{len(chunk)} repos")
         old = {id(t): t for t in self._by_repo.values()}
         self._by_repo = new
         for t in old.values():  # superseded tokens die now rather than at expiry

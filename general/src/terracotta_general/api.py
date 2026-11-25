@@ -143,6 +143,7 @@ def admin_app(b: Broker) -> Starlette:
             "read": pol.decide(repo, "read").reason,
             "write": pol.decide(repo, "write").reason,
             "protection": await protection(repo, pol),
+            "limits": b.grants.usage() if b.grants else {},
             "standing_token": bool(b.standing and b.standing.token_for(repo)),
             "active": [{"id": r.id, "level": r.level} for r in b.store.active(repo)],
         })

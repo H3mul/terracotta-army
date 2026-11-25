@@ -18,7 +18,7 @@ from typing import TextIO
 GENESIS = "0" * 64
 FIELDS = frozenset({
     "event", "request", "repo", "level", "ttl", "caller", "state", "reason",
-    "expires", "status", "contract", "installation",
+    "expires", "status", "contract", "installation", "op",
 })
 _SECRETISH = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*KEY-----"
@@ -83,3 +83,24 @@ def resume_point(lines: list[str]) -> tuple[str, int]:
     verify(lines)
     last = json.loads(lines[-1])
     return last["hash"], last["seq"]
+
+
+def unfinished(lines: Iterable[str]) -> list[dict]:
+    """Mints and token revokes logged `started` with no `done`/`failed` for the same `op`.
+
+    One that is still open when a later `start` record appears was cut off by a crash; one open at
+    the end of the log may be in flight now or may have crashed with nothing after it.
+    """
+    open_: dict[str, dict] = {}
+    out: list[dict] = []
+    for line in (x for x in lines if x.strip()):
+        rec = json.loads(line)
+        if rec.get("event") == "start":
+            out += [{**r, "crashed": True} for r in open_.values()]
+            open_.clear()
+        elif "op" in rec:
+            if rec.get("state") == "started":
+                open_[rec["op"]] = rec
+            else:
+                open_.pop(rec["op"], None)
+    return out + [{**r, "crashed": False} for r in open_.values()]

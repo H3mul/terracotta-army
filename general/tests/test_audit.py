@@ -68,3 +68,17 @@ def test_chain_continues_across_restarts_and_refuses_a_broken_file():
     lines = a.getvalue().splitlines()
     with pytest.raises(AuditError):
         resume_point(lines[1:])
+
+
+def test_unfinished_ops_after_a_crash_are_reported():
+    from terracotta_general.audit import unfinished
+
+    log, buf = make()
+    log.write("start", contract=1)
+    log.write("mint", op="m1", state="started")
+    log.write("mint", op="m1", state="done")
+    log.write("revoke_token", op="r2", state="started")  # crash here
+    log.write("start", contract=1)
+    log.write("mint", op="m1", state="started")           # in flight at the end of the log
+    got = [(r["op"], r["crashed"]) for r in unfinished(buf.getvalue().splitlines())]
+    assert got == [("r2", True), ("m1", False)]
