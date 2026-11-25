@@ -124,8 +124,19 @@ resume    # lifts it; standing read refreshes
 
 The writer App has no key. To rotate its client secret: generate a new one in the App settings, replace the file the broker mounts, restart the broker (a restart revokes any write token still held, using the old secret first, so rotate when no write grant is open), then delete the old secret.
 
-## 9. Things to know
+## 9. Lost phone or leaked operator key
 
+Your SSH key can start grants and activate the proposed policy; it cannot approve write (that needs your GitHub login on the phone). Act in this order:
+
+1. Remove the key from the authorized keys the sshd container mounts, and restart that container.
+2. Sign out the phone's sessions on GitHub (Settings, Sessions) and revoke its authorized apps.
+3. Stop everything from the cluster, which needs no SSH: `kubectl exec deploy/<broker> -c broker -- terracotta-general stop`.
+4. Check `log --since 24h` for grants you did not make, then add a new key, `resume`, and rotate the writer client secret (step 8) if you saw one.
+
+## 10. Things to know
+
+- Only approve a device code the broker just printed on your own SSH session, and check that GitHub's page names the writer App. A client ID is not secret, so anything with GitHub egress could start a device flow of its own and ask you to approve it; that token would reach every repository the writer App is installed on.
+- Put the repository that holds the controller's policy in `write.deny`, and require review on its default branch: a write token can push and open PRs, and without protection it could merge.
 - Tokens cannot be limited to a branch. Protect the default branch of every repository the sandbox can write to. `check` reports it.
 - Standing read lets the agent read every allowlisted repository and send it to anything the egress policy allows, at least the LLM API. Keep the allowlist narrow.
 - A broker restart ends all grants (write tokens still held are revoked at startup). Standing read comes back within a minute.
