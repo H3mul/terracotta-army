@@ -189,7 +189,10 @@ class Sweep:
         if want_checks:
             self.add("required checks", set(want_checks) <= have, f"missing {sorted(set(want_checks) - have)}", fix)
         else:
-            self.add("required checks", bool(have), "no status check is required", fix, level="warn")
+            # no command can fix this: there is no CI check to require until a workflow exists
+            self.add("required checks", bool(have), "no status check is required",
+                     f"{r} has no CI check to require: add a workflow, then list its job names under `checks` in critical.toml",
+                     level="warn")
         self.add("administrators included", bool((p.get("enforce_admins") or {}).get("enabled")),
                  "administrators (and the owner's tokens) can bypass the rules", fix)
         self.add("no force push", not (p.get("allow_force_pushes") or {}).get("enabled"), "force pushes are allowed", fix)
@@ -290,7 +293,23 @@ class Sweep:
         self.add("CODEOWNERS", not stray, f"owners outside the administrator and the listed exceptions: {stray}")
 
     def environment(self, name: str) -> None:
-        env = self.call(f"environment {name}", f"/repos/{self.repo}/environments/{name}")
+        r = self.repo
+        status, env = self.get(f"/repos/{r}/environments/{name}")
+        if status == 404:  # the repo itself was readable, so most likely it was never created
+            uid = None
+            ust, user = self.get(f"/users/{self.admin}")
+            if ust == 200 and isinstance(user, dict):
+                uid = user.get("id")
+            fix = (f"create environment {name} with {self.admin} as the required reviewer (id lookup failed: "
+                   "Settings, Environments)" if uid is None else
+                   f"gh api -X PUT repos/{r}/environments/{name} --input - <<'JSON'\n"
+                   f'{{"reviewers": [{{"type": "User", "id": {uid}}}], "prevent_self_review": false}}\nJSON')
+            self.add(f"environment {name}", False,
+                     "does not exist (or this token cannot see environments: it needs Environments read)", fix)
+            return
+        if status != 200:
+            self.unknown(f"environment {name}", f"GET environments/{name} gave {status}")
+            return
         if isinstance(env, dict):
             rules = [x for x in env.get("protection_rules", []) if x.get("type") == "required_reviewers"]
             people = {((x.get("reviewer") or {}).get("login") or "").lower()
@@ -304,7 +323,9 @@ class Sweep:
         if isinstance(rs, list):
             ok = any(x.get("target") == "tag" and x.get("enforcement") == "active" for x in rs)
             self.add("release tags protected", ok, "no active tag ruleset: anyone with write can create a release tag",
-                     "Settings, Rules, Rulesets: new tag ruleset for v*, restrict creations, updates and deletions", level="warn")
+                     "Settings, Rules, Rulesets: new tag ruleset for v* restricting creation, update and deletion. With no bypass actors "
+                     "not even you can tag (lift the rule to release); with the admin role as bypass the agent's token, "
+                     "which acts as you, can tag too", level="warn")
 
 
 def report(results: list[Result]) -> str:

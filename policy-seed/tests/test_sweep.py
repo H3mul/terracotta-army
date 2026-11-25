@@ -155,6 +155,43 @@ class Baseline(unittest.TestCase):
         self.assertEqual(bad(run(t)), {("environment egress-approval", "fail"), ("release tags protected", "warn")})
 
 
+class Fixes(unittest.TestCase):
+    def test_a_repo_with_no_ci_checks_gets_a_note_not_a_useless_command(self):
+        t = good()
+        t[f"/repos/{R}/branches/main/protection"][1]["required_status_checks"] = None
+        res = run(t, {k: v for k, v in CFG.items() if k != "checks"})
+        warn = next(x for x in res if x.check == "required checks")
+        self.assertEqual(warn.status, "warn")
+        lines = sweep.fix_lines(res)
+        self.assertTrue(any(x.startswith("# ") and "no CI check to require" in x for x in lines))
+        self.assertFalse(any("branches/main/protection" in x for x in lines))  # nothing re-applied for nothing
+
+    def test_a_missing_environment_is_a_failure_with_a_create_command(self):
+        t = good()
+        t[f"/repos/{R}/environments/egress-approval"] = (404, {"message": "Not Found"})
+        t["/users/h3mul"] = (200, {"id": 4242})
+        res = run(t)
+        env = next(x for x in res if x.check == "environment egress-approval")
+        self.assertEqual(env.status, "fail")
+        self.assertIn("does not exist", env.detail)
+        cmd = sweep.fix_lines(res)[0]
+        self.assertIn(f"gh api -X PUT repos/{R}/environments/egress-approval", cmd)
+        self.assertIn('"id": 4242', cmd)
+        self.assertIn('"prevent_self_review": false', cmd)
+
+    def test_environment_without_a_user_id_falls_back_to_a_comment(self):
+        t = good()
+        t[f"/repos/{R}/environments/egress-approval"] = (404, {})
+        env = next(x for x in run(t) if x.check == "environment egress-approval")
+        self.assertTrue(env.fix.startswith("create environment"))
+        self.assertTrue(sweep.fix_lines([env])[0].startswith("# create environment"))
+
+    def test_an_environment_error_other_than_missing_stays_unknown(self):
+        t = good()
+        t[f"/repos/{R}/environments/egress-approval"] = (500, {})
+        self.assertIn(("environment egress-approval", "unknown"), bad(run(t)))
+
+
 class Unknowns(unittest.TestCase):
     def test_a_token_that_cannot_see_settings_is_unknown_not_ok(self):
         t = {k: v for k, v in good().items() if k == f"/repos/{R}"}
