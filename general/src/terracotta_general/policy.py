@@ -56,8 +56,8 @@ class Write(_Strict):
 class Limits(_Strict):
     """Per rolling 24h, ad hoc only. A stolen operator SSH key cannot enumerate repos quickly."""
 
-    grants_per_day: int = Field(20, ge=1)
-    mints_per_day: int = Field(60, ge=1)
+    grants_per_day: int = Field(default=20, ge=1)
+    mints_per_day: int = Field(default=60, ge=1)
 
 
 Level = Literal["standing", "read", "write"]
@@ -78,7 +78,7 @@ def _hits(patterns: list[str], repo: str) -> list[str]:
 class Policy(_Strict):
     read: Read = Field(default_factory=Read)
     write: Write = Field(default_factory=Write)
-    limits: Limits = Field(default_factory=lambda: Limits())
+    limits: Limits = Field(default_factory=Limits)
 
     @classmethod
     def load(cls, text: str) -> Policy:

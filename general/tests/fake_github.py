@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import secrets
 import time
+from urllib.parse import parse_qs
 
 import httpx
 import jwt
@@ -34,6 +36,13 @@ class FakeGitHub:
         self.protected: set[str] = set()  # 'owner/repo' whose default branch is protected
         self.calls: list[str] = []
         self.client_id = "Iv-test"
+        # writer App (device flow and user tokens); the same client id serves both Apps here
+        self.writer_secret = "writer-secret"
+        self.writer_perms = {"contents": "write", "pull_requests": "write"}
+        self.devices: dict[str, dict] = {}  # device_code -> {user_code, state}
+        self.users: dict[str, dict] = {}  # parent user tokens
+        self.slow_downs = 0  # next N polls answer slow_down
+        self.broaden_scoped = False  # scoped answers claim more permissions than asked
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -50,9 +59,83 @@ class FakeGitHub:
         t = self.tokens.get(req.headers["authorization"].split(" ", 1)[1])
         return t if t and not t["revoked"] and t["inst"] not in self.suspended else None
 
+    def approve(self, how: str = "approved") -> None:
+        """What the operator does on the phone for the newest device code."""
+        list(self.devices.values())[-1]["state"] = how
+
+    def _basic_ok(self, req) -> bool:
+        h = req.headers.get("authorization", "")
+        want = base64.b64encode(f"{self.client_id}:{self.writer_secret}".encode()).decode()
+        return h == f"Basic {want}"
+
+    def _writer(self, req: httpx.Request, path: str) -> httpx.Response | None:
+        now = self.clock()
+        iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+        if path == "/login/device/code":
+            form = parse_qs(req.content.decode())
+            if form.get("client_id") != [self.client_id]:
+                return httpx.Response(200, json={"error": "incorrect_client_credentials"})
+            code = "dev-" + secrets.token_hex(8)
+            self.devices[code] = {"user_code": "ABCD-1234", "state": "pending"}
+            return httpx.Response(200, json={"device_code": code, "user_code": "ABCD-1234",
+                                             "verification_uri": "https://github.com/login/device",
+                                             "expires_in": 899, "interval": 5})
+        if path == "/login/oauth/access_token":
+            form = parse_qs(req.content.decode())
+            d = self.devices.get(form.get("device_code", [""])[0])
+            if form.get("grant_type") != ["urn:ietf:params:oauth:grant-type:device_code"]:
+                return httpx.Response(200, json={"error": "incorrect_client_credentials"})
+            if d is None:
+                return httpx.Response(200, json={"error": "incorrect_device_code"})
+            if self.slow_downs:
+                self.slow_downs -= 1
+                return httpx.Response(200, json={"error": "slow_down", "interval": 10})
+            if d["state"] != "approved":
+                err = {"pending": "authorization_pending", "denied": "access_denied",
+                       "expired": "expired_token"}[d["state"]]
+                return httpx.Response(200, json={"error": err})
+            tok = "ghu_" + secrets.token_hex(20)
+            self.users[tok] = {"revoked": False}
+            return httpx.Response(200, json={
+                "access_token": tok, "expires_in": 28800, "token_type": "bearer", "scope": "",
+                "refresh_token": "ghr_" + secrets.token_hex(30), "refresh_token_expires_in": 15638400})
+        if path == f"/applications/{self.client_id}/token/scoped" and req.method == "POST":
+            if not self._basic_ok(req):
+                return httpx.Response(404)
+            body = json.loads(req.content)
+            parent = self.users.get(body.get("access_token"))
+            if not parent or parent["revoked"]:
+                return httpx.Response(401)
+            iid = next((i for i, v in self.inst.items() if v[0].lower() == body.get("target", "").lower()), None)
+            perms = body.get("permissions", {})
+            if iid is None or set(perms) - set(self.writer_perms):
+                return httpx.Response(403)
+            repos = body.get("repositories")  # absent means the whole installation, like GitHub
+            granted = self.inst[iid][1] if repos is None else [r for r in repos if r in self.inst[iid][1]]
+            if not granted:
+                return httpx.Response(403)
+            tok = "ghu_" + secrets.token_hex(20)
+            self.tokens[tok] = {"inst": iid, "repos": granted, "perms": perms, "revoked": False}
+            shown = {**perms, "administration": "write"} if self.broaden_scoped else perms
+            return httpx.Response(200, json={"token": tok, "expires_at": iso(now + 8 * 3600),
+                                             "installation": {"permissions": shown}})
+        if path == f"/applications/{self.client_id}/token" and req.method == "DELETE":
+            if not self._basic_ok(req):
+                return httpx.Response(404)
+            tok = json.loads(req.content).get("access_token")
+            t = self.tokens.get(tok) or self.users.get(tok)
+            if not t or t["revoked"]:
+                return httpx.Response(404)
+            t["revoked"] = True
+            return httpx.Response(204)
+        return None
+
     def handle(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
         self.calls.append(f"{req.method} {path}")
+        mine = self._writer(req, path)
+        if mine is not None:
+            return mine
         if path == "/app/installations":
             if not self._app(req):
                 return httpx.Response(401)

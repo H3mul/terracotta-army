@@ -13,6 +13,7 @@ from terracotta_general.lifecycle import Lifecycle
 from terracotta_general.policy import Policy
 from terracotta_general.requests import RequestStore
 from terracotta_general.standing import StandingRead
+from terracotta_general.writes import WriteGrants
 
 
 @dataclass
@@ -26,3 +27,4 @@ class Broker:
     grants: Grants | None = None
     life: Lifecycle | None = None
     app: App | None = None  # the reader App, for suspending installations
+    writes: WriteGrants | None = None  # None until the writer App is configured

@@ -15,7 +15,7 @@ from terracotta_general.credential import serve_credential
 from terracotta_general.github import GitHubError
 from terracotta_general.lifecycle import describe_changes, digest
 from terracotta_general.repo import parse_repo
-from terracotta_general.requests import TransitionError
+from terracotta_general.requests import APPROVAL_WINDOW, TransitionError
 from terracotta_general.standing import READ_PERMS
 
 MIN_CONTRACT = CONTRACT_VERSION  # callers older than this get 426
@@ -68,6 +68,15 @@ async def authenticate(b: Broker, request: Request) -> JSONResponse | str:
     if who != b.sandbox_identity:
         return _refuse(b, 403, "caller is not the sandbox identity", caller=who)
     return who
+
+
+async def _revoke(b: Broker, repo: str, level: str | None) -> int:
+    n = 0
+    if b.grants and level in (None, "read"):
+        n += await b.grants.revoke(repo, "read")
+    if b.writes and level in (None, "write"):
+        n += await b.writes.revoke(repo)
+    return n
 
 
 def sandbox_app(b: Broker) -> Starlette:
@@ -142,6 +151,7 @@ def admin_app(b: Broker) -> Starlette:
             "standing": pol.decide(repo, "standing").reason,
             "read": pol.decide(repo, "read").reason,
             "write": pol.decide(repo, "write").reason,
+            "allowed": {lv: pol.decide(repo, lv).allowed for lv in ("standing", "read", "write")},
             "protection": await protection(repo, pol),
             "limits": b.grants.usage() if b.grants else {},
             "standing_token": bool(b.standing and b.standing.token_for(repo)),
@@ -156,9 +166,17 @@ def admin_app(b: Broker) -> Starlette:
             return _bad("body must be JSON with repo (owner/name) and an optional string ttl")
         if b.life and b.life.stopped:
             return JSONResponse({"error": "emergency stop is active; run resume first"}, status_code=409)
-        if d.get("level") != "read" or b.grants is None:
-            return JSONResponse({"error": "only read grants are available yet"}, status_code=501)
+        level = d.get("level")
+        if level == "write" and b.writes is None:
+            return JSONResponse({"error": "write grants are not configured (no writer App)"}, status_code=501)
+        if level not in ("read", "write") or b.grants is None:
+            return JSONResponse({"error": "level must be read or write"}, status_code=400)
         try:
+            if level == "write":
+                r, dc = await _need(b.writes, "a writer App").begin(repo, ttl or None, "operator")
+                return JSONResponse({"id": r.id, "repo": r.repo, "ttl": r.ttl, "user_code": dc.user_code,
+                                     "verification_uri": dc.verification_uri,
+                                     "expires_in": min(dc.expires_in, APPROVAL_WINDOW)})
             r = await b.grants.grant_read(repo, ttl or None, "operator")
         except ValueError as e:  # an unparseable ttl
             return _bad(str(e))
@@ -170,15 +188,19 @@ def admin_app(b: Broker) -> Starlette:
             return JSONResponse({"error": str(e)}, status_code=502)
         return JSONResponse({"id": r.id, "repo": r.repo, "ttl": r.ttl, "ends": r.grant_ends})
 
+    async def grant_status(request: Request) -> JSONResponse:
+        try:
+            return JSONResponse(_need(b.writes, "a writer App").status(request.path_params["rid"]))
+        except TransitionError:
+            return JSONResponse({"error": "unknown request"}, status_code=404)
+
     async def revoke(request: Request) -> JSONResponse:
         d = await _body(request)
         repo = _valid_repo(d.get("repo")) if d else None
         level = d.get("level") if d else None
         if repo is None or level not in (None, "", "read", "write"):
             return _bad("body must be JSON with repo (owner/name) and level read, write or empty")
-        if b.grants is None:
-            return JSONResponse({"revoked": 0})
-        return JSONResponse({"revoked": await b.grants.revoke(repo, level or None)})
+        return JSONResponse({"revoked": await _revoke(b, repo, level or None)})
 
     async def policy_show(_: Request) -> JSONResponse:
         proposed, why = _need(b.life, 'lifecycle').proposal()
@@ -201,8 +223,8 @@ def admin_app(b: Broker) -> Starlette:
         b.audit.write("policy", caller="operator", reason=f"approved {digest(pol)}")
         revoked = 0
         for r in b.store.active():  # grants the new policy forbids die now
-            if not pol.decide(r.repo, r.level).allowed and b.grants:
-                revoked += await b.grants.revoke(r.repo, r.level)
+            if not pol.decide(r.repo, r.level).allowed:
+                revoked += await _revoke(b, r.repo, r.level)
         if b.standing:
             try:
                 await b.standing.refresh()
@@ -217,6 +239,10 @@ def admin_app(b: Broker) -> Starlette:
         errors, revoked, suspended = [], 0, 0
         try:
             revoked = await b.grants.revoke_all() if b.grants else 0
+            if b.writes:
+                revoked += await b.writes.revoke_all()
+                if b.writes.outstanding():  # a revoke failed; serving is blocked, retrying is safe
+                    errors.append("write-token-revoke-pending")
             if b.standing:
                 await b.standing.drop_all()
             app = _need(b.app, 'a GitHub app')
@@ -251,5 +277,6 @@ def admin_app(b: Broker) -> Starlette:
         Route("/admin/policy/approve", policy_approve, methods=["POST"]),
         Route("/admin/check", check),
         Route("/admin/grant", grant, methods=["POST"]),
+        Route("/admin/grant/{rid}", grant_status),
         Route("/admin/revoke", revoke, methods=["POST"]),
     ])

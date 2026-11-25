@@ -16,11 +16,12 @@ from terracotta_general.audit import GENESIS, AuditError, AuditLog, resume_point
 from terracotta_general.auth import TokenReview
 from terracotta_general.broker import Broker
 from terracotta_general.config import Settings
-from terracotta_general.github import App
+from terracotta_general.github import App, Writer
 from terracotta_general.grants import Grants
 from terracotta_general.lifecycle import Lifecycle
 from terracotta_general.requests import RequestStore
 from terracotta_general.standing import StandingRead
+from terracotta_general.writes import WriteGrants
 
 
 def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | None = None) -> Broker:
@@ -40,6 +41,15 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
     app = App(settings.reader_client_id, pathlib.Path(settings.reader_key_path).read_text(),
               http or httpx.AsyncClient(timeout=10.0), base=settings.github_api, audit=audit)
     active = life.policy
+    grants = Grants(app, store, active, audit)
+    writes = None
+    if settings.writer_client_id and settings.writer_secret_path:
+        writer = Writer(settings.writer_client_id,
+                        pathlib.Path(settings.writer_secret_path).read_text().strip(),
+                        http or httpx.AsyncClient(timeout=10.0), base=settings.github_api,
+                        web=settings.github_web, audit=audit)
+        tokens = settings.write_tokens_path or str(pathlib.Path(settings.state_path).with_name("write-tokens.json"))
+        writes = WriteGrants(writer, store, active, audit, tokens, grants.spend, paused=lambda: life.stopped)
     return Broker(
         policy=active,
         store=store,
@@ -49,9 +59,10 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
             pathlib.Path(settings.kube_token_path), pathlib.Path(settings.kube_ca_path)),
         sandbox_identity=settings.sandbox_identity,
         standing=StandingRead(app, active, audit, paused=lambda: life.stopped),
-        grants=Grants(app, store, active, audit),
+        grants=grants,
         life=life,
         app=app,
+        writes=writes,
     )
 
 
@@ -67,6 +78,8 @@ async def run(settings: Settings) -> None:
     admin = uvicorn.Server(uvicorn.Config(admin_app(b), uds=str(sock), log_level="warning"))
     assert b.standing and b.grants  # build() always wires both
     tasks = [asyncio.create_task(b.standing.run()), asyncio.create_task(b.grants.run())]
+    if b.writes:
+        tasks.append(asyncio.create_task(b.writes.run()))
     try:
         await asyncio.gather(tcp.serve(), admin.serve())
     finally:

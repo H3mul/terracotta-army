@@ -136,7 +136,8 @@ def test_I10_nothing_that_grants_access_is_written_to_disk(rig):
 
 def test_only_github_py_talks_to_the_mutation_endpoints():
     """I5, structurally: mint, revoke and suspend requests, and the App JWT, live in github.py alone."""
-    forbidden = ("access_tokens", "installation/token", "/suspended", "import jwt", "from jwt")
+    forbidden = ("access_tokens", "installation/token", "/suspended", "import jwt", "from jwt",
+                 "token/scoped", "/login/device", "login/oauth", "/applications/")
     for f in SRC.glob("*.py"):
         if f.name == "github.py":
             continue

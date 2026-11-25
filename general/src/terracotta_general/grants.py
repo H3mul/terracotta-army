@@ -36,7 +36,7 @@ class Grants:
             q.popleft()
         return len(q)
 
-    def _spend(self, kind: str) -> None:
+    def spend(self, kind: str) -> None:
         lim = self._policy().limits
         cap = lim.grants_per_day if kind == "grants" else lim.mints_per_day
         if self._recent(kind) >= cap:
@@ -54,8 +54,8 @@ class Grants:
         if self._store.active(repo, "read"):
             raise TransitionError(f"{repo} already has an active read grant; revoke it first")
         ttl_s = pol.clamp_ttl("read", ttl, repo)
-        self._spend("grants")  # before any GitHub call, so probing unknown repos counts too
-        self._spend("mints")
+        self.spend("grants")  # before any GitHub call, so probing unknown repos counts too
+        self.spend("mints")
         inst = await self._app.installation_for_repo(repo)  # raises GitHubError if not installed
         token = await self._app.installation_token(inst, [repo.split("/", 1)[1]], READ_PERMS)
         req = self._store.create(repo, "read", ttl_s)
@@ -72,7 +72,7 @@ class Grants:
         token, inst = self._tokens[rid]
         if token.expires_at - self._clock() < REMINT_BEFORE:
             try:
-                self._spend("mints")
+                self.spend("mints")
                 fresh = await self._app.installation_token(inst, [repo.split("/", 1)[1]], READ_PERMS)
             except (GitHubError, PermissionError):
                 return token if token.expires_at > self._clock() else None

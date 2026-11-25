@@ -27,6 +27,10 @@ async def serve_credential(b: Broker, host: str, path: str, username: str, calle
         return 400, {"error": str(e)}
 
     if username == "writer":
+        wt = await b.writes.token_for(repo) if b.writes else None
+        if wt is not None:
+            b.audit.write("served", repo=repo, level="write", caller=caller)
+            return 200, {"username": "x-access-token", "password": wt.value, "expires_at": int(wt.expires_at)}
         d = b.policy().decide(repo, "write")
         hint = f"{CLI} grant write {repo}" if d.allowed else f"write refused: {d.reason}"
         b.audit.write("denied", repo=repo, level="write", caller=caller, reason="no active write grant")
