@@ -56,6 +56,14 @@ Every OpenSpec change proposal carries an `## Upstream` section with one verdict
 `upstream: no (homelab-specific)`. When a change is contributed upstream or you decide not to, set it
 to `done (<urls>)` or `declined (<reason>)`.
 
+Each also carries a `## Community` section with one verdict line, such as `community: no (homelab-specific)`
+or `community: yes (a template repo and an init script)`. Ask: could someone else run or reuse this? When
+the verdict is `yes` or `maybe`, end the plan's tasks with a "Generalize for the community" group, each
+task starting with `(community)`: instance values behind config or an init script, a template or
+examples, a quickstart naming every one-time setup step, a licence, a versioned release, tests that need
+nothing from this environment, and publishing. Later set the verdict to `done (<urls>)` or
+`not planned (<reason>)`.
+
 ## Tooling for a project: use this priority list
 
 Never install anything globally. That means no `apt`, no `sudo`, no `pip install` outside a virtual
