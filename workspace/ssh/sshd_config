@@ -2,7 +2,10 @@
 # sshd runs as the unprivileged `agent` user on a high port: no root, no PAM, no sudo.
 Port 2222
 PidFile /tmp/sshd.pid
-AuthorizedKeysFile /etc/terracotta-workspace/authorized_keys
+# A static file (ConfigMap) plus keys ws-supervisor fetches from GitHub (WS_GITHUB_USERS).
+AuthorizedKeysFile /etc/terracotta-workspace/authorized_keys /tmp/ws-authorized_keys.github
+# One unprivileged user; ownership checks on mounted key files only break volume mounts.
+StrictModes no
 PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no

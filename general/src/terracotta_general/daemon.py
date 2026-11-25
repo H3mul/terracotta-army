@@ -18,6 +18,7 @@ from terracotta_general.broker import Broker
 from terracotta_general.config import Settings
 from terracotta_general.github import App, Writer
 from terracotta_general.grants import Grants
+from terracotta_general.keys import KeyRefresher
 from terracotta_general.lifecycle import Lifecycle
 from terracotta_general.requests import RequestStore
 from terracotta_general.standing import StandingRead
@@ -50,6 +51,10 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
                         web=settings.github_web, audit=audit)
         tokens = settings.write_tokens_path or str(pathlib.Path(settings.state_path).with_name("write-tokens.json"))
         writes = WriteGrants(writer, store, active, audit, tokens, grants.spend, paused=lambda: life.stopped)
+    keys = None
+    if settings.operator_github_users:
+        keys = KeyRefresher(http or httpx.AsyncClient(timeout=10.0), list(settings.operator_github_users),
+                            settings.operator_keys_path, audit, base=settings.github_web)
     return Broker(
         policy=active,
         store=store,
@@ -63,6 +68,7 @@ def build(settings: Settings, auth=None, sinks=None, http: httpx.AsyncClient | N
         life=life,
         app=app,
         writes=writes,
+        keys=keys,
     )
 
 
@@ -80,6 +86,8 @@ async def run(settings: Settings) -> None:
     tasks = [asyncio.create_task(b.standing.run()), asyncio.create_task(b.grants.run())]
     if b.writes:
         tasks.append(asyncio.create_task(b.writes.run()))
+    if b.keys:
+        tasks.append(asyncio.create_task(b.keys.run()))
     try:
         await asyncio.gather(tcp.serve(), admin.serve())
     finally:

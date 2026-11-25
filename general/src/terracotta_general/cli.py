@@ -16,8 +16,10 @@ from terracotta_general.repo import parse_repo
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="terracotta-general access broker")
 grant = typer.Typer(no_args_is_help=True, help="Request time-boxed repo access")
 policy = typer.Typer(no_args_is_help=True, help="Show and activate policy changes")
+keys = typer.Typer(no_args_is_help=True, help="Operator SSH keys from GitHub")
 app.add_typer(grant, name="grant")
 app.add_typer(policy, name="policy")
+app.add_typer(keys, name="keys")
 
 
 def repo_arg(value: str) -> str:
@@ -220,6 +222,15 @@ def policy_approve(digest: str) -> None:
     """Activate the proposed policy with this hash."""
     out = call("POST", "/admin/policy/approve", json={"hash": digest})
     typer.echo(f"policy {out['active']} is active; revoked {out['revoked']} grant(s) it forbids")
+
+
+@keys.command("refresh")
+def keys_refresh() -> None:
+    """Fetch the operators' keys from GitHub now (the daemon also does it every 6 hours)."""
+    out = call("POST", "/admin/keys/refresh")
+    typer.echo(f"{len(out['fingerprints'])} operator key(s) in force:")
+    for f in out["fingerprints"]:
+        typer.echo(f"  {f}")
 
 
 @app.command()

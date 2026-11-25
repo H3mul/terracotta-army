@@ -15,7 +15,7 @@ from collections.abc import Callable
 import click
 import typer
 
-ALLOWED = {"status", "check", "grant", "revoke", "log", "setup", "policy", "stop", "resume"}
+ALLOWED = {"status", "check", "grant", "revoke", "log", "setup", "policy", "keys", "stop", "resume"}
 HELP = "commands: " + ", ".join(sorted(ALLOWED)) + "  (help, exit)"
 
 

@@ -5,6 +5,7 @@
   ws status                    list checkouts
   ws store clone OWNER/REPO    clone the central OpenSpec repo into /workspace/openspec
   ws store sync                register every store under /workspace/openspec with openspec
+  ws keys refresh              fetch the SSH keys of WS_GITHUB_USERS from GitHub now (ws-supervisor does it every 6 hours)
 
 A project points at its spec store with `store: <id>` in openspec/config.yaml; each machine maps
 ids to local folders in its own registry (~/.local/share/openspec/stores/registry.yaml, on the
@@ -21,7 +22,8 @@ import sys
 ROOT = pathlib.Path(os.environ.get("WS_ROOT", "/workspace"))
 REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-USAGE = "usage: ws clone OWNER/REPO [NAME] | ws status | ws store clone OWNER/REPO | ws store sync"
+USAGE = ("usage: ws clone OWNER/REPO [NAME] | ws status | ws store clone OWNER/REPO | ws store sync"
+         " | ws keys refresh")
 REGISTRY = pathlib.Path(os.environ.get("OPENSPEC_REGISTRY", pathlib.Path.home() / ".local/share/openspec/stores/registry.yaml"))
 
 
@@ -127,6 +129,8 @@ def main(argv: list[str]) -> int:
         return store_clone(argv[3])
     if argv[1:] == ["store", "sync"]:
         return sync_stores()
+    if argv[1:] == ["keys", "refresh"]:  # the SSH keys fetched from the owner's GitHub account
+        return subprocess.run(["ws-supervisor", "--refresh-keys"], check=False).returncode
     print(USAGE, file=sys.stderr)
     return 2
 

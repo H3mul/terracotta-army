@@ -17,6 +17,7 @@ x-broker-env: &broker-env
   TG_READER_KEY: /etc/terracotta/reader.pem
   TG_GITHUB_API: http://stub:8000
   TG_GITHUB_WEB: http://stub:8000
+  TG_OPERATOR_GITHUB_USERS: octo  # operator keys also come from this account's GitHub keys
   TG_WRITER_CLIENT_ID: Iv-it  # the stub serves both Apps under one client id
   TG_WRITER_SECRET: /etc/terracotta/writer-secret
   TG_KUBE_API: http://stub:8000
@@ -73,6 +74,8 @@ services:
       TG_BROKER: http://broker:8080
       TG_TOKEN_FILE: /run/identity/token
       GIT_SSL_CAINFO: /keys/tls.crt  # trust the stub's certificate for github.com
+      WS_GITHUB_USERS: octo
+      WS_GITHUB_WEB: http://stub:8000
     volumes:
       - ${TG_IT_DIR}/sandbox-token:/run/identity/token:ro
       - ${TG_IT_DIR}/tls.crt:/keys/tls.crt:ro

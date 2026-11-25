@@ -18,6 +18,8 @@ class Settings:
     writer_client_id: str | None = None  # the write tier is off unless both writer settings are set
     writer_secret_path: str | None = None
     write_tokens_path: str | None = None  # default: next to the state file
+    operator_github_users: tuple[str, ...] = ()  # their GitHub keys become operator SSH keys
+    operator_keys_path: str = "/var/lib/terracotta/authorized_keys.github"
     state_path: str = "/var/lib/terracotta/state.json"
     # Endpoints and paths below default to production; the compose harness points them at a stub.
     github_api: str = "https://api.github.com"
@@ -44,6 +46,8 @@ class Settings:
             writer_client_id=env.get("TG_WRITER_CLIENT_ID") or None,
             writer_secret_path=env.get("TG_WRITER_SECRET") or None,
             write_tokens_path=env.get("TG_WRITE_TOKENS") or None,
+            operator_github_users=tuple(u for u in env.get("TG_OPERATOR_GITHUB_USERS", "").replace(",", " ").split() if u),
+            operator_keys_path=env.get("TG_OPERATOR_KEYS", cls.operator_keys_path),
             state_path=env.get("TG_STATE", cls.state_path),
             github_api=env.get("TG_GITHUB_API", cls.github_api),
             github_web=env.get("TG_GITHUB_WEB", cls.github_web),

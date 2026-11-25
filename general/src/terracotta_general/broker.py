@@ -9,6 +9,7 @@ from terracotta_general.audit import AuditLog
 from terracotta_general.auth import Authenticator
 from terracotta_general.github import App
 from terracotta_general.grants import Grants
+from terracotta_general.keys import KeyRefresher
 from terracotta_general.lifecycle import Lifecycle
 from terracotta_general.policy import Policy
 from terracotta_general.requests import RequestStore
@@ -28,3 +29,4 @@ class Broker:
     life: Lifecycle | None = None
     app: App | None = None  # the reader App, for suspending installations
     writes: WriteGrants | None = None  # None until the writer App is configured
+    keys: KeyRefresher | None = None  # None unless operator GitHub users are configured

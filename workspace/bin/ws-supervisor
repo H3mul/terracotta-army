@@ -11,26 +11,94 @@ import json
 import os
 import pathlib
 import signal
+import base64
+import binascii
+import hashlib
 import socket
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 
 STATUS = pathlib.Path(os.environ.get("WS_STATUS", "/tmp/ws-supervisor.status"))
 HOME = pathlib.Path(os.environ.get("HOME", "/home/agent"))
 SECRET_KEYS = pathlib.Path("/etc/terracotta-workspace/host-keys")
 AUTH_KEYS = pathlib.Path("/etc/terracotta-workspace/authorized_keys")
+GITHUB_KEYS = pathlib.Path("/tmp/ws-authorized_keys.github")  # listed in the sshd_config template too
+GITHUB_WEB = os.environ.get("WS_GITHUB_WEB", "https://github.com")
+KEY_TYPES = ("ssh-ed25519", "sk-ssh-ed25519@openssh.com", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+             "ecdsa-sha2-nistp521", "sk-ecdsa-sha2-nistp256@openssh.com", "ssh-rsa")
+KEYS_EVERY, KEYS_RETRY = 6 * 3600, 60
 SSHD_TEMPLATE = pathlib.Path("/etc/terracotta-workspace/sshd_config")
 PORT = 2222
 # What git and ws need inside SSH sessions (sshd does not pass the container environment).
 # Never an API key.
 PASS_TO_SESSIONS = ("PATH", "TG_BROKER", "TG_TOKEN_FILE", "TG_CONTRACT_FILE", "GIT_TERMINAL_PROMPT", "WS_ROOT",
-                    "GIT_SSL_CAINFO")
+                    "GIT_SSL_CAINFO", "WS_GITHUB_USERS", "WS_GITHUB_WEB", "SSL_CERT_FILE")
 CRASH_WINDOW, CRASH_LIMIT = 60.0, 5
 
 
 def log(msg: str) -> None:
     print(f"ws-supervisor: {msg}", flush=True)
+
+
+def github_users() -> list[str]:
+    return os.environ.get("WS_GITHUB_USERS", "").replace(",", " ").split()
+
+
+def parse_key(line: str) -> str | None:
+    parts = line.split()
+    if len(parts) < 2 or parts[0] not in KEY_TYPES or len(line) > 2048:
+        return None
+    try:
+        blob = base64.b64decode(parts[1], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return f"{parts[0]} {parts[1]}" if blob.startswith(len(parts[0]).to_bytes(4, "big") + parts[0].encode()) else None
+
+
+def refresh_github_keys(users: list[str], out: pathlib.Path = GITHUB_KEYS, base: str | None = None) -> list[str]:
+    """Write the users' GitHub SSH keys for sshd and return their fingerprints.
+
+    Any failure, or no keys at all, leaves the previous file alone so an outage cannot lock anyone
+    out. Redirects are not followed.
+    """
+    base = base or GITHUB_WEB
+    keys: list[str] = []
+    for user in users:
+        if not user.replace("-", "").isalnum() or user.startswith("-") or len(user) > 39:
+            raise ValueError(f"not a GitHub login: {user!r}")
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):  # type: ignore[override]
+                return None
+
+        opener = urllib.request.build_opener(NoRedirect)
+        with opener.open(f"{base}/{user}.keys", timeout=10) as r:
+            text = r.read(1 << 20).decode(errors="replace")
+        keys += [k for k in (parse_key(line) for line in text.splitlines()) if k and k not in keys]
+    if not keys or len(keys) > 50:
+        raise ValueError(f"{len(keys)} usable keys")
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text("\n".join(keys) + "\n")
+    tmp.chmod(0o644)
+    os.replace(tmp, out)
+    return ["SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(k.split()[1])).digest()).decode().rstrip("=")
+            for k in keys]
+
+
+def keep_github_keys_fresh(users: list[str]) -> None:
+    while True:
+        wait = KEYS_EVERY
+        try:
+            n = len(refresh_github_keys(users))
+            log(f"{n} operator SSH key(s) from GitHub account(s) {', '.join(users)}")
+        except (OSError, ValueError, urllib.error.URLError) as e:
+            log(f"could not refresh GitHub keys ({e.__class__.__name__}); keeping the previous ones")
+            wait = KEYS_RETRY
+        time.sleep(wait)
 
 
 def host_key() -> pathlib.Path:
@@ -126,9 +194,23 @@ def health() -> int:
 def main() -> int:
     if "--health" in sys.argv:
         return health()
-    if not AUTH_KEYS.is_file() or not AUTH_KEYS.read_text().strip():
-        log(f"no authorized keys at {AUTH_KEYS}: nobody could log in, refusing to start")
+    users = github_users()
+    if "--refresh-keys" in sys.argv:
+        if not users:
+            print("WS_GITHUB_USERS is not set", file=sys.stderr)
+            return 1
+        try:
+            for fp in refresh_github_keys(users):
+                print(fp)
+        except (OSError, ValueError, urllib.error.URLError) as e:
+            print(f"refresh failed ({e.__class__.__name__}); the previous keys stay in force", file=sys.stderr)
+            return 1
+        return 0
+    if not users and (not AUTH_KEYS.is_file() or not AUTH_KEYS.read_text().strip()):
+        log(f"no authorized keys at {AUTH_KEYS} and no WS_GITHUB_USERS: nobody could log in, refusing to start")
         return 1
+    if users:
+        threading.Thread(target=keep_github_keys_fresh, args=(users,), daemon=True).start()
     link_instructions()
     key = host_key()
     cfg = render_sshd_config(key)

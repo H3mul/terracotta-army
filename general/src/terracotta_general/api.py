@@ -13,6 +13,7 @@ from terracotta_general import CONTRACT_VERSION
 from terracotta_general.broker import Broker
 from terracotta_general.credential import serve_credential
 from terracotta_general.github import GitHubError
+from terracotta_general.keys import KeysError
 from terracotta_general.lifecycle import describe_changes, digest
 from terracotta_general.repo import parse_repo
 from terracotta_general.requests import APPROVAL_WINDOW, TransitionError
@@ -203,6 +204,15 @@ def admin_app(b: Broker) -> Starlette:
             return _bad("body must be JSON with repo (owner/name) and level read, write or empty")
         return JSONResponse({"revoked": await _revoke(b, repo, level or None)})
 
+    async def keys_refresh(_: Request) -> JSONResponse:
+        if b.keys is None:
+            return JSONResponse({"error": "no operator GitHub users configured (TG_OPERATOR_GITHUB_USERS)"},
+                                status_code=501)
+        try:
+            return JSONResponse({"fingerprints": await b.keys.refresh()})
+        except KeysError as e:
+            return JSONResponse({"error": f"{e}; the previous keys stay in force"}, status_code=502)
+
     async def policy_show(_: Request) -> JSONResponse:
         proposed, why = _need(b.life, 'lifecycle').proposal()
         return JSONResponse({
@@ -280,4 +290,5 @@ def admin_app(b: Broker) -> Starlette:
         Route("/admin/grant", grant, methods=["POST"]),
         Route("/admin/grant/{rid}", grant_status),
         Route("/admin/revoke", revoke, methods=["POST"]),
+        Route("/admin/keys/refresh", keys_refresh, methods=["POST"]),
     ])

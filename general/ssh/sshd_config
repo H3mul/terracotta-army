@@ -2,7 +2,11 @@
 Port 2222
 HostKey /var/lib/terracotta-ssh/ssh_host_ed25519_key
 PidFile /tmp/sshd.pid
-AuthorizedKeysFile /etc/terracotta/authorized_keys
+# A static file (ConfigMap) plus the keys the daemon fetches from the operators' GitHub accounts.
+AuthorizedKeysFile /etc/terracotta/authorized_keys /var/lib/terracotta/authorized_keys.github
+# One unprivileged user in a container nobody else logs in to: ownership checks on the key files
+# only break volume mounts (fsGroup makes the directory group-writable, runners own bind mounts).
+StrictModes no
 AllowUsers tg
 PasswordAuthentication no
 KbdInteractiveAuthentication no

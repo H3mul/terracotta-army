@@ -52,6 +52,12 @@ async def state(_: Request) -> Response:
     })
 
 
+async def set_keys(request: Request) -> Response:
+    """What a GitHub account's SSH keys page serves: {"login": ["ssh-ed25519 ...", ...]}."""
+    fake.ssh_keys = await request.json()
+    return Response(status_code=204)
+
+
 async def approve(request: Request) -> Response:
     """The operator's phone: approve (or deny) the newest device code."""
     fake.approve(request.query_params.get("how", "approved"))
@@ -148,6 +154,7 @@ app = Starlette(routes=[
     Route("/_state", state),
     Route("/_protect", protect, methods=["POST"]),
     Route("/_approve", approve, methods=["POST"]),
+    Route("/_keys", set_keys, methods=["POST"]),
     Route("/{path:path}", github, methods=["GET", "POST", "PUT", "DELETE"]),
 ])
 

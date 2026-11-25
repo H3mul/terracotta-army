@@ -310,7 +310,7 @@ def test_18_host_key_and_home_survive_a_restart(h, env):
 
 def test_19_refuses_to_start_without_authorized_keys(env):
     compose, e, _ = env
-    r = run([*compose, "run", "--rm", "--no-deps", "-T", "-v", "/dev/null:/etc/terracotta-workspace/authorized_keys:ro",
+    r = run([*compose, "run", "--rm", "--no-deps", "-T", "-e", "WS_GITHUB_USERS=", "-v", "/dev/null:/etc/terracotta-workspace/authorized_keys:ro",
              "sandbox"], env=e, timeout=60)
     assert r.returncode == 1 and "refusing to start" in r.stdout + r.stderr
 
@@ -447,3 +447,36 @@ def test_25_write_push_end_to_end(h, env):
     run([*compose, "restart", "broker"], env=e)
     wait_for(lambda: write_tokens(h) == [], "the restarted broker to revoke the leftover token")
     assert h.cred("octo/other", username="writer")[0] == 403  # nothing is served after the restart
+
+
+def test_26_ssh_keys_follow_the_github_account_for_operator_and_workspace(h, env):
+    _compose, _e, d = env
+    run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "second", "-f", str(d / "second")], check=True)
+    pub = (d / "second.pub").read_text().strip()
+    h.exec("sandbox", "curl", "-s", "-X", "POST", "-d", json.dumps({"octo": [pub]}), "http://stub:8000/_keys")
+
+    def ssh_with_second(host_user_port, *args):
+        script = ("cat > /tmp/second && chmod 600 /tmp/second && ssh -i /tmp/second -o StrictHostKeyChecking=no "
+                  "-o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o IdentitiesOnly=yes "
+                  f"-p 2222 {host_user_port} " + " ".join(args))
+        r = subprocess.run([*h.compose, "exec", "-T", "operator", "sh", "-c", script],
+                           input=(d / "second").read_text(), capture_output=True, text=True, env=h.e, check=False)
+        return r.returncode, r.stdout + r.stderr
+
+    assert ssh_with_second("tg@sshd", "status")[0] != 0  # not an operator key yet
+    rc, out = h.op("keys", "refresh")
+    assert rc == 0 and "operator key(s) in force" in out and "SHA256:" in out, out
+    rc, out = ssh_with_second("tg@sshd", "status")
+    assert rc == 0 and "active grants" in out, out
+
+    rc, out = h.ws_ssh("ws keys refresh")  # as the agent, with the static key
+    assert rc == 0 and out.strip().startswith("SHA256:"), out
+    rc, out = ssh_with_second("agent@sandbox", "id -u")
+    assert rc == 0 and out.strip() == "1000", out
+
+    # an account with no keys (or GitHub being down) must not lock anyone out
+    h.exec("sandbox", "curl", "-s", "-X", "POST", "-d", json.dumps({"octo": []}), "http://stub:8000/_keys")
+    rc, out = h.op("keys", "refresh")
+    assert rc != 0 and "previous keys stay in force" in out
+    assert ssh_with_second("tg@sshd", "status")[0] == 0
+    assert h.ws_ssh("ws keys refresh")[0] != 0 and h.ws_ssh("true")[0] == 0

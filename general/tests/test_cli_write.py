@@ -12,6 +12,7 @@ from terracotta_general.audit import AuditLog
 from terracotta_general.broker import Broker
 from terracotta_general.github import App, Writer
 from terracotta_general.grants import Grants
+from terracotta_general.keys import KeyRefresher
 from terracotta_general.lifecycle import Lifecycle, digest
 from terracotta_general.policy import Policy
 from terracotta_general.requests import RequestStore
@@ -46,8 +47,9 @@ def rig(monkeypatch, tmp_path):
     writer = Writer(fake.client_id, fake.writer_secret, fake.client(), audit=audit, sleep=sleep)
     writes = WriteGrants(writer, store, life.policy, audit, str(tmp_path / "w.json"), grants.spend,
                          paused=lambda: life.stopped)
+    keys = KeyRefresher(fake.client(), ["octo"], str(tmp_path / "ak.github"), audit, base="https://github.com")
     b = Broker(life.policy, store, audit, None, "sa", StandingRead(app, life.policy, audit), grants,
-               life, app, writes)
+               life, app, writes, keys)
     asyncio.run(b.standing.refresh())
     monkeypatch.setattr(cli, "POLL", 0.01)
     with TestClient(admin_app(b), base_url="http://broker") as client:  # one loop keeps the flow task alive
@@ -118,3 +120,15 @@ def test_a_policy_without_the_write_rule_kills_the_grant(rig, tmp_path):
     runner.invoke(cli.app, ["policy", "approve", h])
     assert not b.store.active("octo/a", "write")
     assert all(t["revoked"] for t in fake.tokens.values() if t["perms"].get("contents") == "write")
+
+
+def test_keys_refresh_prints_fingerprints_and_a_failure_keeps_the_old_keys(rig):
+    from test_keys import new_key
+
+    _b, fake, _ = rig
+    fake.ssh_keys["octo"] = [new_key()]
+    r = runner.invoke(cli.app, ["keys", "refresh"])
+    assert r.exit_code == 0 and "1 operator key(s) in force" in r.output and "SHA256:" in r.output
+    fake.ssh_keys["octo"] = []
+    r = runner.invoke(cli.app, ["keys", "refresh"])
+    assert r.exit_code == 1 and "no-keys" in r.output and "previous keys stay in force" in r.output

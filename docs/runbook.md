@@ -62,6 +62,7 @@ One image, two containers in one pod (or two services in Compose): the daemon an
 | `TG_READER_CLIENT_ID`, `TG_READER_KEY` | the App's Client ID, and the path to its PEM |
 | `TG_WRITER_CLIENT_ID`, `TG_WRITER_SECRET` | the writer App's Client ID, and the path to a file holding its client secret (both, or the write tier is off) |
 | `TG_WRITE_TOKENS` | where live write tokens are kept until revoked (default `write-tokens.json` beside `TG_STATE`; 0600, broker volume only) |
+| `TG_OPERATOR_GITHUB_USERS` | space or comma separated GitHub logins whose SSH keys (`github.com/<login>.keys`) become operator keys; refreshed at start and every 6 hours, keys from the static `authorized_keys` file still work |
 | `TG_STATE` | where the approved policy and stop flag persist; mount a small volume (default `/var/lib/terracotta/state.json`) |
 | `TG_AUDIT_FILE` | optional audit file (the audit log always goes to stdout); set it on both containers, on the shared state volume, so `log` works over SSH |
 | `TG_ADMIN_SOCKET` | admin unix socket, shared with the sshd container (default `/run/terracotta/admin.sock`) |
@@ -76,6 +77,8 @@ kubectl create secret generic terracotta-general-github -n terracotta-army \
 ```
 
 Then set the image tag and digest from the release notes, put your public keys in the authorized-keys ConfigMap, and set the HelmRelease's `suspend` to `false`.
+
+Operator keys can come from your GitHub account instead of (or as well as) the static file: set `TG_OPERATOR_GITHUB_USERS`, and run `keys refresh` over SSH to pull them now. A refresh that fails or finds no keys keeps the previous ones. Anyone who can add a key to that account can then log in, so use a strong GitHub login (it already gates write approval). The workspace does the same for its own sshd with `WS_GITHUB_USERS` (`ws keys refresh`).
 
 The sshd container needs your public key(s) at `/etc/terracotta/authorized_keys`, and a volume at `/var/lib/terracotta-ssh` so its host key persists. Run both containers read-only, as non-root, with no capabilities (the Compose harness does).
 

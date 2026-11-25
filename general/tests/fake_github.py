@@ -42,6 +42,7 @@ class FakeGitHub:
         self.devices: dict[str, dict] = {}  # device_code -> {user_code, state}
         self.users: dict[str, dict] = {}  # parent user tokens
         self.slow_downs = 0  # next N polls answer slow_down
+        self.ssh_keys: dict[str, list[str]] = {}  # login -> public key lines served at /<login>.keys
         self.broaden_scoped = False  # scoped answers claim more permissions than asked
 
     def client(self) -> httpx.AsyncClient:
@@ -133,6 +134,11 @@ class FakeGitHub:
     def handle(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
         self.calls.append(f"{req.method} {path}")
+        m = re.fullmatch(r"/([^/]+)\.keys", path)
+        if m:
+            if m[1] not in self.ssh_keys:
+                return httpx.Response(404)
+            return httpx.Response(200, text="\n".join(self.ssh_keys[m[1]]) + "\n")
         mine = self._writer(req, path)
         if mine is not None:
             return mine
