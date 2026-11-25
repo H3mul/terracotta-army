@@ -39,12 +39,45 @@ Settings, Integrations).
 
 ## Applying it once
 
-For each critical repo, with `gh` logged in as the owner:
+Do not rely on this list alone: run `GITHUB_TOKEN=<token> python3 tools/sweep.py --fix-commands` first, it
+prints only what is missing. As the repo owner (`r` is each critical repo in turn):
 
-    python3 tools/sweep.py --fix-commands        # the commands for whatever is missing
+    # repo flags and secret scanning
+    gh api -X PATCH repos/$r -F allow_auto_merge=false \
+      -f 'security_and_analysis[secret_scanning][status]=enabled' \
+      -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
 
-Settings that have no API (environments' reviewers, the **Require approval for all outside
-collaborators** option on older plans) are named in the report; set them in the web UI.
+    # Actions: read-only token, no PR approval, fork PRs need approval
+    gh api -X PUT repos/$r/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
+    gh api -X PUT repos/$r/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors
+
+    # only members open PRs (GitHub expires it after six months: renew)
+    gh api -X PUT repos/$r/interaction-limits -f limit=collaborators_only -f expiry=six_months
+
+    # repos with `actions = "selected"` (ta-policy, homelab-k3s-flux); check they use no third-party action first
+    gh api -X PUT repos/$r/actions/permissions -F enabled=true -f allowed_actions=selected
+    gh api -X PUT repos/$r/actions/permissions/selected-actions -F github_owned_allowed=true -F verified_allowed=false
+
+    # branch protection (replaces what is there); contexts are the CI job names
+    gh api -X PUT repos/$r/branches/main/protection --input - <<'JSON'
+    { "required_status_checks": {"strict": true, "contexts": ["check", "approve"]},
+      "enforce_admins": true,
+      "required_pull_request_reviews": {"required_approving_review_count": 0, "dismiss_stale_reviews": true},
+      "restrictions": null, "allow_force_pushes": false, "allow_deletions": false,
+      "required_conversation_resolution": true }
+    JSON
+
+Contexts per repo: ta-policy `["check","approve"]` (they appear in GitHub only after the workflow has run
+once, so open a throwaway PR first); terracotta-army `["general","secrets","integration"]`;
+homelab-k3s-flux none yet (`"required_status_checks": null`).
+
+**Protection with administrators included blocks direct pushes to `main`, yours too.** Turn it on for
+terracotta-army and the Flux repo once the work in flight is pushed; after that every change is a PR with
+green checks.
+
+Only in the web UI: the `egress-approval` and `hardening-read` environments here, a `v*` tag ruleset on
+terracotta-army (restrict creation, update and deletion), the writer App installed on this repo. Not
+visible to the sweep at all: two-factor on the account and which Apps are installed.
 
 ## Running the sweep
 
