@@ -183,7 +183,8 @@ class Sweep:
         if isinstance(a, dict) and a.get("enabled"):
             allowed = a.get("allowed_actions")
             self.add("actions limited", allowed != "all" or cfg.get("actions") == "any",
-                     "any third-party action may run", f"gh api -X PUT repos/{r}/actions/permissions -F enabled=true -f allowed_actions=selected")
+                     "any third-party action may run", f"gh api -X PUT repos/{r}/actions/permissions -F enabled=true -f allowed_actions=selected\n"
+                     f"gh api -X PUT repos/{r}/actions/permissions/selected-actions -F github_owned_allowed=true -F verified_allowed=false")
             if allowed == "all" and cfg.get("actions") == "any":
                 self.out.append(Result(r, "actions limited", "warn", "any action may run (accepted in the policy); pin them by SHA"))
         w = self.call("actions workflow permissions", f"/repos/{r}/actions/permissions/workflow")
