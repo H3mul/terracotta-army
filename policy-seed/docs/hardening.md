@@ -41,8 +41,11 @@ Settings, Integrations).
 
 ## Applying it once
 
-Do not rely on this list alone: run `GITHUB_TOKEN=<token> python3 tools/sweep.py --fix-commands` first, it
-prints only what is missing. As the repo owner (`r` is each critical repo in turn):
+Do not rely on this list alone: run `python3 tools/sweep.py --fix-commands` first. It uses your `gh` login
+(or `GITHUB_TOKEN` if one is exported) and prints only what is missing, as commands you can paste: each starts
+with `env -u GITHUB_TOKEN -u GH_TOKEN` so it runs as your login even when a read-only token is exported
+(gh prefers the environment over its login), and settings with no API come out as `#` comments.
+The list below is the same set in full, for the repo owner (`r` is each critical repo in turn):
 
     # repo flags and secret scanning
     gh api -X PATCH repos/$r -F allow_auto_merge=false \
@@ -84,6 +87,8 @@ visible to the sweep at all: two-factor on the account and which Apps are instal
 ## Running the sweep
 
 `.github/workflows/hardening.yml` runs it daily with a fine-grained token that can only read:
+
+The token below is for the daily workflow only; a manual run needs none.
 
 1. Create a fine-grained personal access token (resource owner: you; repositories: the critical ones
    only; expiry: up to a year, put the renewal in your calendar). Repository permissions, all **read**:

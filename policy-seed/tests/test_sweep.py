@@ -168,6 +168,44 @@ class Unknowns(unittest.TestCase):
         self.assertEqual(bad(run({})), {("repository", "unknown")})
 
 
+class Auth(unittest.TestCase):
+    class Gh:
+        def __init__(self, token="", rc=0):
+            self.token, self.rc, self.calls = token, rc, []
+
+        def __call__(self, argv, **kw):
+            self.calls.append(argv)
+            return type("R", (), {"stdout": self.token + "\n", "returncode": self.rc})()
+
+    def test_the_environment_wins_then_the_gh_login(self):
+        gh = self.Gh("from-gh")
+        self.assertEqual(sweep.resolve_token({"GITHUB_TOKEN": "env1", "GH_TOKEN": "env2"}, gh), "env1")
+        self.assertEqual(sweep.resolve_token({"GH_TOKEN": "env2"}, gh), "env2")
+        self.assertEqual(gh.calls, [])  # gh is not even asked
+        self.assertEqual(sweep.resolve_token({}, gh), "from-gh")
+        self.assertEqual(gh.calls, [["gh", "auth", "token"]])
+
+    def test_no_login_and_no_gh_give_nothing(self):
+        self.assertEqual(sweep.resolve_token({}, self.Gh("", rc=1)), "")
+
+        def missing(*a, **k):
+            raise FileNotFoundError
+
+        self.assertEqual(sweep.resolve_token({}, missing), "")
+
+    def test_fix_commands_run_as_the_gh_login_and_ui_steps_are_comments(self):
+        res = [sweep.Result("r", "a", "fail", "", "gh api -X PATCH repos/r -F x=1"),
+               sweep.Result("r", "b", "fail", "", "gh api -X PUT repos/r/p --input - <<'JSON'\n{}\nJSON"),
+               sweep.Result("r", "c", "warn", "", "set reviewers in Settings, Environments, x"),
+               sweep.Result("r", "d", "ok", "", "gh api never printed"),
+               sweep.Result("r", "a2", "fail", "", "gh api -X PATCH repos/r -F x=1")]  # a duplicate
+        lines = sweep.fix_lines(res)
+        self.assertEqual(lines[0], "env -u GITHUB_TOKEN -u GH_TOKEN gh api -X PATCH repos/r -F x=1")
+        self.assertTrue(lines[1].startswith("env -u GITHUB_TOKEN -u GH_TOKEN gh api -X PUT") and "<<'JSON'" in lines[1])
+        self.assertEqual(lines[2], "# set reviewers in Settings, Environments, x")
+        self.assertEqual(len(lines), 3)
+
+
 class Report(unittest.TestCase):
     def test_exit_code_report_and_fix_commands(self):
         t = good()
@@ -183,7 +221,7 @@ class Report(unittest.TestCase):
         text = out.getvalue()
         self.assertEqual(rc, 1)
         self.assertIn("**FAIL** administrators included", text)
-        self.assertIn(f"gh api -X PUT repos/{R}/branches/main/protection", text)
+        self.assertIn(f"env -u GITHUB_TOKEN -u GH_TOKEN gh api -X PUT repos/{R}/branches/main/protection", text)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(sweep.main(["--policy", str(pol)], get=lambda p: good().get(p, (404, {}))), 0)
 

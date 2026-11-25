@@ -8,10 +8,13 @@ The administrator (default: the repo owner; `[admin] login` in the policy overri
 repo: a missing CODEOWNERS file is correct, and one that exists may name only the administrator and the
 `owners` exceptions listed for that repo.
 
-Needs GITHUB_TOKEN: a fine-grained token with read-only Administration and Metadata on the listed
-repos. It only reads. Exit 0: every condition holds (warnings allowed). Exit 1: a condition fails,
+Auth: `GITHUB_TOKEN` (or `GH_TOKEN`) if set, which is what the daily workflow uses (a fine-grained
+read-only token), otherwise your `gh` login (`gh auth token`), so a manual run needs nothing exported.
+It only reads. Exit 0: every condition holds (warnings allowed). Exit 1: a condition fails,
 or could not be checked ("unknown": the token cannot see that setting). `--fix-commands` prints the
-`gh api` commands that would repair the failures; nothing here changes a repo. Standard library only.
+`gh api` commands that would repair the failures, each one starting with `env -u GITHUB_TOKEN -u GH_TOKEN`
+so it runs as your `gh` login even if a read-only token is exported in the shell (gh prefers the
+environment over its login); settings with no API come out as `#` comments. Nothing here changes a repo. Standard library only.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import base64
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import tomllib
@@ -43,6 +47,30 @@ class Result:
     status: str  # ok | fail | warn | unknown
     detail: str = ""
     fix: str = ""
+
+
+def resolve_token(env: dict[str, str] | None = None, run: Callable[..., object] = subprocess.run) -> str:
+    """The environment's token, else the `gh` login's; "" if neither exists. Never printed."""
+    env = os.environ if env is None else env
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if env.get(name):
+            return env[name]
+    try:
+        r = run(["gh", "auth", "token"], capture_output=True, text=True, check=False)
+    except OSError:
+        return ""
+    return (r.stdout or "").strip() if getattr(r, "returncode", 1) == 0 else ""
+
+
+def fix_lines(results: list[Result]) -> list[str]:
+    """Copy-pasteable fixes: `gh api` commands run as the gh login, anything else as a comment."""
+    out = []
+    for fix in dict.fromkeys(x.fix for x in results if x.status in ("fail", "warn") and x.fix):
+        if fix.startswith("gh api"):
+            out.append("env -u GITHUB_TOKEN -u GH_TOKEN " + fix.replace("\ngh api", "\nenv -u GITHUB_TOKEN -u GH_TOKEN gh api"))
+        else:
+            out.append(f"# {fix}")
+    return out
 
 
 def http_get(token: str, base: str = API) -> Getter:
@@ -305,9 +333,9 @@ def main(argv: list[str], get: Getter | None = None) -> int:
     default_admin = (data.get("admin") or {}).get("login", "")
     cfgs = [{"admin": default_admin, **c} if default_admin else c for c in data.get("repo", [])]
     if get is None:
-        token = os.environ.get("GITHUB_TOKEN", "")
+        token = resolve_token()
         if not token:
-            print("GITHUB_TOKEN is not set", file=sys.stderr)
+            print("no token: set GITHUB_TOKEN, or log in with `gh auth login`", file=sys.stderr)
             return 2
         get = http_get(token)
     results: list[Result] = []
@@ -320,8 +348,8 @@ def main(argv: list[str], get: Getter | None = None) -> int:
     if a.json:
         a.json.write_text(json.dumps([asdict(x) for x in results], indent=2))
     if a.fix_commands:
-        for cmd in dict.fromkeys(x.fix for x in results if x.status in ("fail", "warn") and x.fix):
-            print(cmd)
+        for line in fix_lines(results):
+            print(line)
     return 1 if any(x.status in ("fail", "unknown") for x in results) else 0
 
 

@@ -46,4 +46,4 @@ notifies you. It only reads: `--fix-commands` prints the commands for you to run
     python3 -m unittest discover -s tests
     python3 tools/egress.py check
     python3 tools/egress.py add crates.io --reason "Rust crates"
-    GITHUB_TOKEN=... python3 tools/sweep.py --fix-commands
+    python3 tools/sweep.py --fix-commands      # uses your gh login
