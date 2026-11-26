@@ -2,20 +2,30 @@
 """Check the critical repositories against the hardening baseline (docs/hardening.md).
 
     sweep.py [--policy hardening/critical.toml] [--report report.md] [--json report.json]
-             [--fix-commands]
+             [--fix-commands] [--quiet]
 
-Needs GITHUB_TOKEN: a fine-grained token with read-only Administration and Metadata on the listed
-repos. It only reads. Exit 0: every condition holds (warnings allowed). Exit 1: a condition fails,
+The administrator (default: the repo owner; `[admin] login` in the policy overrides it) owns every
+repo: a missing CODEOWNERS file is correct, and one that exists may name only the administrator and the
+`owners` exceptions listed for that repo.
+
+Auth: `GITHUB_TOKEN` (or `GH_TOKEN`) if set, which is what the daily workflow uses (a fine-grained
+read-only token), otherwise your `gh` login (`gh auth token`), so a manual run needs nothing exported.
+It only reads. Exit 0: every condition holds (warnings allowed). Exit 1: a condition fails,
 or could not be checked ("unknown": the token cannot see that setting). `--fix-commands` prints the
-`gh api` commands that would repair the failures; nothing here changes a repo. Standard library only.
+`gh api` commands that would repair the failures, each one starting with `env -u GITHUB_TOKEN -u GH_TOKEN`
+so it runs as your `gh` login even if a read-only token is exported in the shell (gh prefers the
+environment over its login); settings with no API come out as `#` comments. Progress ("checking <repo>", one dot per API call, a summary per repo) goes to stderr, so stdout stays
+clean for the report and the commands; `--quiet` turns it off. Nothing here changes a repo. Standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import tomllib
@@ -40,6 +50,30 @@ class Result:
     fix: str = ""
 
 
+def resolve_token(env: dict[str, str] | None = None, run: Callable[..., object] = subprocess.run) -> str:
+    """The environment's token, else the `gh` login's; "" if neither exists. Never printed."""
+    env = os.environ if env is None else env
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if env.get(name):
+            return env[name]
+    try:
+        r = run(["gh", "auth", "token"], capture_output=True, text=True, check=False)
+    except OSError:
+        return ""
+    return (r.stdout or "").strip() if getattr(r, "returncode", 1) == 0 else ""
+
+
+def fix_lines(results: list[Result]) -> list[str]:
+    """Copy-pasteable fixes: `gh api` commands run as the gh login, anything else as a comment."""
+    out = []
+    for fix in dict.fromkeys(x.fix for x in results if x.status in ("fail", "warn") and x.fix):
+        if fix.startswith("gh api"):
+            out.append("env -u GITHUB_TOKEN -u GH_TOKEN " + fix.replace("\ngh api", "\nenv -u GITHUB_TOKEN -u GH_TOKEN gh api"))
+        else:
+            out.append(f"# {fix}")
+    return out
+
+
 def http_get(token: str, base: str = API) -> Getter:
     def get(path: str) -> tuple[int, object]:
         req = urllib.request.Request(base + path, headers={
@@ -62,6 +96,7 @@ def http_get(token: str, base: str = API) -> Getter:
 class Sweep:
     def __init__(self, get: Getter, cfg: dict, now: float | None = None):
         self.get, self.cfg, self.repo = get, cfg, cfg["name"]
+        self.admin = ""  # set once the repo's owner is known
         self.now = now if now is not None else time.time()
         self.out: list[Result] = []
         self.info: dict = {}
@@ -89,6 +124,7 @@ class Sweep:
         if not isinstance(info, dict):
             return self.out
         self.info = info
+        self.admin = (self.cfg.get("admin") or (info.get("owner") or {}).get("login") or "").lower()
         branch = info.get("default_branch", "main")
         self.repo_flags(info)
         self.branch(branch)
@@ -153,7 +189,10 @@ class Sweep:
         if want_checks:
             self.add("required checks", set(want_checks) <= have, f"missing {sorted(set(want_checks) - have)}", fix)
         else:
-            self.add("required checks", bool(have), "no status check is required", fix, level="warn")
+            # no command can fix this: there is no CI check to require until a workflow exists
+            self.add("required checks", bool(have), "no status check is required",
+                     f"{r} has no CI check to require: add a workflow, then list its job names under `checks` in critical.toml",
+                     level="warn")
         self.add("administrators included", bool((p.get("enforce_admins") or {}).get("enabled")),
                  "administrators (and the owner's tokens) can bypass the rules", fix)
         self.add("no force push", not (p.get("allow_force_pushes") or {}).get("enabled"), "force pushes are allowed", fix)
@@ -218,11 +257,10 @@ class Sweep:
                              f"gh api -X PUT repos/{r}/interaction-limits -f limit={want} -f expiry=six_months", level="warn")
             else:
                 self.unknown("only members open PRs", f"GET interaction-limits gave {status}")
-        owner = info.get("owner", {}).get("login", "")
         c = self.call("collaborators", f"/repos/{r}/collaborators?affiliation=direct&per_page=100")
         if isinstance(c, list):
-            allowed = set(cfg.get("collaborators", [owner]))
-            extra = sorted(x["login"] for x in c if x["login"] not in allowed)
+            allowed = {self.admin, *(x.lower() for x in cfg.get("collaborators", []))}
+            extra = sorted(x["login"] for x in c if x["login"].lower() not in allowed)
             self.add("collaborators", not extra, f"unexpected direct collaborators: {extra}",
                      f"gh api -X DELETE repos/{r}/collaborators/<login>")
         keys = self.call("deploy keys", f"/repos/{r}/keys")
@@ -232,14 +270,52 @@ class Sweep:
         hooks = self.call("webhooks", f"/repos/{r}/hooks")
         if isinstance(hooks, list):
             self.add("no webhooks", not hooks, f"{len(hooks)} webhook(s): check each is expected", level="warn")
-        found = any(self.get(f"/repos/{r}/contents/{p}")[0] == 200 for p in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"))
-        self.add("CODEOWNERS", found, "no CODEOWNERS file", level="warn")
+        self.codeowners()
+
+    def codeowners(self) -> None:
+        """No file is fine: the administrator owns everything. A file may name only exceptions we know."""
+        for path in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
+            status, f = self.get(f"/repos/{self.repo}/contents/{path}")
+            if status == 200 and isinstance(f, dict):
+                break
+        else:
+            self.add("CODEOWNERS", True)
+            return
+        try:
+            text = base64.b64decode(f.get("content", "")).decode()
+        except (ValueError, UnicodeDecodeError):
+            self.unknown("CODEOWNERS", "the file could not be read")
+            return
+        allowed = {self.admin, *(x.lower().lstrip("@") for x in self.cfg.get("owners", []))}
+        named = {tok.lstrip("@").lower() for line in text.splitlines() if not line.strip().startswith("#")
+                 for tok in line.split()[1:] if tok.startswith("@") or "@" in tok}
+        stray = sorted(named - allowed)
+        self.add("CODEOWNERS", not stray, f"owners outside the administrator and the listed exceptions: {stray}")
 
     def environment(self, name: str) -> None:
-        env = self.call(f"environment {name}", f"/repos/{self.repo}/environments/{name}")
+        r = self.repo
+        status, env = self.get(f"/repos/{r}/environments/{name}")
+        if status == 404:  # the repo itself was readable, so most likely it was never created
+            uid = None
+            ust, user = self.get(f"/users/{self.admin}")
+            if ust == 200 and isinstance(user, dict):
+                uid = user.get("id")
+            fix = (f"create environment {name} with {self.admin} as the required reviewer (id lookup failed: "
+                   "Settings, Environments)" if uid is None else
+                   f"gh api -X PUT repos/{r}/environments/{name} --input - <<'JSON'\n"
+                   f'{{"reviewers": [{{"type": "User", "id": {uid}}}], "prevent_self_review": false}}\nJSON')
+            self.add(f"environment {name}", False,
+                     "does not exist (or this token cannot see environments: it needs Environments read)", fix)
+            return
+        if status != 200:
+            self.unknown(f"environment {name}", f"GET environments/{name} gave {status}")
+            return
         if isinstance(env, dict):
             rules = [x for x in env.get("protection_rules", []) if x.get("type") == "required_reviewers"]
-            self.add(f"environment {name}", bool(rules and rules[0].get("reviewers")), "no required reviewers",
+            people = {((x.get("reviewer") or {}).get("login") or "").lower()
+                      for x in (rules[0].get("reviewers", []) if rules else []) if x.get("type") == "User"}
+            self.add(f"environment {name}", self.admin in people,
+                     f"the administrator ({self.admin}) is not a required reviewer",
                      f"set required reviewers in Settings, Environments, {name}")
 
     def tags(self) -> None:
@@ -247,7 +323,9 @@ class Sweep:
         if isinstance(rs, list):
             ok = any(x.get("target") == "tag" and x.get("enforcement") == "active" for x in rs)
             self.add("release tags protected", ok, "no active tag ruleset: anyone with write can create a release tag",
-                     "Settings, Rules, Rulesets: new tag ruleset for v*, restrict creations, updates and deletions", level="warn")
+                     "Settings, Rules, Rulesets: new tag ruleset for v* restricting creation, update and deletion. With no bypass actors "
+                     "not even you can tag (lift the rule to release); with the admin role as bypass the agent's token, "
+                     "which acts as you, can tag too", level="warn")
 
 
 def report(results: list[Result]) -> str:
@@ -272,17 +350,41 @@ def main(argv: list[str], get: Getter | None = None) -> int:
     p.add_argument("--report", type=pathlib.Path)
     p.add_argument("--json", type=pathlib.Path)
     p.add_argument("--fix-commands", action="store_true")
+    p.add_argument("--quiet", action="store_true", help="no progress on stderr")
     a = p.parse_args(argv)
-    cfgs = tomllib.loads(a.policy.read_text()).get("repo", [])
+    data = tomllib.loads(a.policy.read_text())
+    default_admin = (data.get("admin") or {}).get("login", "")
+    cfgs = [{"admin": default_admin, **c} if default_admin else c for c in data.get("repo", [])]
     if get is None:
-        token = os.environ.get("GITHUB_TOKEN", "")
+        token = resolve_token()
         if not token:
-            print("GITHUB_TOKEN is not set", file=sys.stderr)
+            print("no token: set GITHUB_TOKEN, or log in with `gh auth login`", file=sys.stderr)
             return 2
         get = http_get(token)
     results: list[Result] = []
-    for cfg in cfgs:
-        results += Sweep(get, cfg).run()
+
+    def say(msg: str, end: str = "\n") -> None:
+        if not a.quiet:
+            print(msg, end=end, file=sys.stderr, flush=True)
+
+    say(f"sweeping {len(cfgs)} repo(s) from {a.policy.name}")
+    for n, cfg in enumerate(cfgs, 1):
+        calls = 0
+
+        def counted(path: str, _get: Getter = get) -> tuple[int, object]:
+            nonlocal calls
+            calls += 1
+            say(".", end="")
+            return _get(path)
+
+        say(f"[{n}/{len(cfgs)}] {cfg['name']} ", end="")
+        started = time.time()
+        got = Sweep(counted, cfg).run()
+        results += got
+        bad = [x for x in got if x.status in ("fail", "unknown")]
+        warn = [x for x in got if x.status == "warn"]
+        say(f" {len(got) - len(bad) - len(warn)} ok, {len(warn)} warn, {len(bad)} to fix "
+            f"({calls} API calls, {time.time() - started:.1f}s)")
     text = report(results)
     print(text)
     if a.report:
@@ -290,8 +392,8 @@ def main(argv: list[str], get: Getter | None = None) -> int:
     if a.json:
         a.json.write_text(json.dumps([asdict(x) for x in results], indent=2))
     if a.fix_commands:
-        for cmd in dict.fromkeys(x.fix for x in results if x.status in ("fail", "warn") and x.fix):
-            print(cmd)
+        for line in fix_lines(results):
+            print(line)
     return 1 if any(x.status in ("fail", "unknown") for x in results) else 0
 
 

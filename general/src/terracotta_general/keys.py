@@ -59,6 +59,11 @@ class KeyRefresher:
             raise SystemExit(f"not a GitHub login: {bad[0]!r}")
         self._http, self._users, self._path, self._audit, self._base = http, users, pathlib.Path(path), audit, base
 
+    @property
+    def users(self) -> list[str]:
+        """The operators; the first is the administrator (the default owner of everything)."""
+        return list(self._users)
+
     async def _fetch(self, user: str) -> list[str]:
         try:
             r = await self._http.get(f"{self._base}/{user}.keys", follow_redirects=False)

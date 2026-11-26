@@ -117,6 +117,7 @@ def admin_app(b: Broker) -> Starlette:
             "contract": CONTRACT_VERSION,
             "stopped": bool(b.life and b.life.stopped),
             "audit": dict(zip(("records", "last"), b.audit.head, strict=True)),
+            "operators": b.keys.users if b.keys else [],
             "standing": b.standing.repos() if b.standing else [],
             "grants": [
                 {"id": r.id, "repo": r.repo, "level": r.level, "ends": r.grant_ends}

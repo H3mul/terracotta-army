@@ -62,7 +62,7 @@ One image, two containers in one pod (or two services in Compose): the daemon an
 | `TG_READER_CLIENT_ID`, `TG_READER_KEY` | the App's Client ID, and the path to its PEM |
 | `TG_WRITER_CLIENT_ID`, `TG_WRITER_SECRET` | the writer App's Client ID, and the path to a file holding its client secret (both, or the write tier is off) |
 | `TG_WRITE_TOKENS` | where live write tokens are kept until revoked (default `write-tokens.json` beside `TG_STATE`; 0600, broker volume only) |
-| `TG_OPERATOR_GITHUB_USERS` | space or comma separated GitHub logins whose SSH keys (`github.com/<login>.keys`) become operator keys; refreshed at start and every 6 hours, keys from the static `authorized_keys` file still work |
+| `TG_OPERATOR_GITHUB_USERS` | space or comma separated GitHub logins whose SSH keys (`github.com/<login>.keys`) become operator keys; refreshed at start and every 6 hours, keys from the static `authorized_keys` file still work. The first login is the **administrator** (shown by `status`): the default owner of every critical repo, so those need no CODEOWNERS file |
 | `TG_STATE` | where the approved policy and stop flag persist; mount a small volume (default `/var/lib/terracotta/state.json`) |
 | `TG_AUDIT_FILE` | optional audit file (the audit log always goes to stdout); set it on both containers, on the shared state volume, so `log` works over SSH |
 | `TG_ADMIN_SOCKET` | admin unix socket, shared with the sshd container (default `/run/terracotta/admin.sock`) |

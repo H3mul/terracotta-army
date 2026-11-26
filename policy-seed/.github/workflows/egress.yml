@@ -30,11 +30,11 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           python3 base/tools/egress.py diff base head > comment.md
-          others="$(gh pr diff "$PR" --name-only | grep -v -x -e egress/workspace.toml -e generated/workspace-egress.yaml || true)"
+          others="$(gh pr diff "$PR" -R "$GITHUB_REPOSITORY" --name-only | grep -v -x -e egress/workspace.toml -e generated/workspace-egress.yaml || true)"
           if [ -n "$others" ]; then
             printf '\n:rotating_light: **This PR also changes:**\n```\n%s\n```\nReview those files as carefully as the policy itself.\n' "$others" >> comment.md
           fi
-          gh pr comment "$PR" --body-file comment.md --edit-last --create-if-none
+          gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body-file comment.md --edit-last --create-if-none
   approve:
     needs: check
     runs-on: ubuntu-latest

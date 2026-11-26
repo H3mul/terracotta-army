@@ -7,9 +7,16 @@
 #   min_approvals required approving reviews (0 is fine for a solo owner: you cannot approve yourself)
 #   actions       "selected" (default: only listed actions may run) or "any" (accepted, with a warning)
 #   interaction   public repos: who may open PRs, issues and comments ("collaborators_only")
-#   collaborators logins with direct access (default: the owner only)
-#   environments  environments that must exist with required reviewers
+#   collaborators extra logins with direct access (the administrator always may)
+#   owners        extra CODEOWNERS owners (the administrator owns everything; no file is needed)
+#   admin         this repo's administrator (default: the policy's, else the repo owner)
+#   environments  environments that must exist with the administrator as a required reviewer
 #   protect_tags  a tag ruleset must exist (release tags)
+
+# The administrator owns every critical repo, so none needs a CODEOWNERS file; one that exists may
+# name only the administrator and `owners`. Default: each repo's owner. Set it here to override:
+# [admin]
+# login = "H3mul"
 
 [[repo]]
 name = "H3mul/ta-policy"

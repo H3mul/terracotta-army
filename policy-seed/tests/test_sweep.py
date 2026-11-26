@@ -1,3 +1,4 @@
+import base64
 import copy
 import importlib.util
 import pathlib
@@ -38,9 +39,8 @@ def good() -> dict:
         f"/repos/{R}/collaborators?affiliation=direct&per_page=100": (200, [{"login": "H3mul"}]),
         f"/repos/{R}/keys": (200, []),
         f"/repos/{R}/hooks": (200, []),
-        f"/repos/{R}/contents/.github/CODEOWNERS": (200, {}),
         f"/repos/{R}/environments/egress-approval": (200, {"protection_rules": [
-            {"type": "required_reviewers", "reviewers": [{"type": "User"}]}]}),
+            {"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "H3mul"}}]}]}),
         f"/repos/{R}/rulesets?includes_parents=true": (200, [{"target": "tag", "enforcement": "active"}]),
     }
 
@@ -122,15 +122,74 @@ class Baseline(unittest.TestCase):
         t[f"/repos/{R}/collaborators?affiliation=direct&per_page=100"] = (200, [{"login": "H3mul"}, {"login": "stranger"}])
         t[f"/repos/{R}/keys"] = (200, [{"title": "ci", "read_only": False}])
         t[f"/repos/{R}/hooks"] = (200, [{"id": 1}])
-        t[f"/repos/{R}/contents/.github/CODEOWNERS"] = (404, {})
         self.assertEqual(bad(run(t)), {("collaborators", "fail"), ("deploy keys read-only", "fail"),
-                                       ("no webhooks", "warn"), ("CODEOWNERS", "warn")})
+                                       ("no webhooks", "warn")})
+
+    def test_the_administrator_is_the_owner_unless_the_policy_says_otherwise(self):
+        t = good()
+        t[f"/repos/{R}/collaborators?affiliation=direct&per_page=100"] = (200, [{"login": "h3mul"}, {"login": "Pal"}])
+        self.assertEqual(bad(run(t)), {("collaborators", "fail")})  # case does not matter, a stranger does
+        self.assertEqual(bad(run(t, {**CFG, "collaborators": ["pal"]})), set())  # an exception makes it fine
+        self.assertIn(("environment egress-approval", "fail"), bad(run(t, {**CFG, "admin": "pal"})))
+
+    def test_codeowners_missing_is_fine_and_a_file_may_only_name_known_owners(self):
+        def file(text):
+            return (200, {"content": base64.b64encode(text.encode()).decode()})
+
+        p = f"/repos/{R}/contents/.github/CODEOWNERS"
+        t = good()
+        self.assertEqual(bad(run(t)), set())  # no file: the administrator owns everything
+        t[p] = file("# who reviews what\n* @H3mul\n/tools/ @h3mul\n/docs/\n")
+        self.assertEqual(bad(run(t)), set())
+        t[p] = file("* @H3mul\n/general/ @H3mul @stranger\n/ci/ @org/security\n")
+        self.assertEqual(bad(run(t)), {("CODEOWNERS", "fail")})
+        self.assertEqual(bad(run(t, {**CFG, "owners": ["stranger", "@org/security"]})), set())
+        t[p] = (200, {"content": "!!not base64!!"})
+        self.assertEqual(bad(run(t)), {("CODEOWNERS", "unknown")})
 
     def test_environment_and_tags(self):
         t = good()
-        t[f"/repos/{R}/environments/egress-approval"] = (200, {"protection_rules": []})
+        t[f"/repos/{R}/environments/egress-approval"] = (200, {"protection_rules": [
+            {"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "someone-else"}}]}]})
         t[f"/repos/{R}/rulesets?includes_parents=true"] = (200, [])
         self.assertEqual(bad(run(t)), {("environment egress-approval", "fail"), ("release tags protected", "warn")})
+
+
+class Fixes(unittest.TestCase):
+    def test_a_repo_with_no_ci_checks_gets_a_note_not_a_useless_command(self):
+        t = good()
+        t[f"/repos/{R}/branches/main/protection"][1]["required_status_checks"] = None
+        res = run(t, {k: v for k, v in CFG.items() if k != "checks"})
+        warn = next(x for x in res if x.check == "required checks")
+        self.assertEqual(warn.status, "warn")
+        lines = sweep.fix_lines(res)
+        self.assertTrue(any(x.startswith("# ") and "no CI check to require" in x for x in lines))
+        self.assertFalse(any("branches/main/protection" in x for x in lines))  # nothing re-applied for nothing
+
+    def test_a_missing_environment_is_a_failure_with_a_create_command(self):
+        t = good()
+        t[f"/repos/{R}/environments/egress-approval"] = (404, {"message": "Not Found"})
+        t["/users/h3mul"] = (200, {"id": 4242})
+        res = run(t)
+        env = next(x for x in res if x.check == "environment egress-approval")
+        self.assertEqual(env.status, "fail")
+        self.assertIn("does not exist", env.detail)
+        cmd = sweep.fix_lines(res)[0]
+        self.assertIn(f"gh api -X PUT repos/{R}/environments/egress-approval", cmd)
+        self.assertIn('"id": 4242', cmd)
+        self.assertIn('"prevent_self_review": false', cmd)
+
+    def test_environment_without_a_user_id_falls_back_to_a_comment(self):
+        t = good()
+        t[f"/repos/{R}/environments/egress-approval"] = (404, {})
+        env = next(x for x in run(t) if x.check == "environment egress-approval")
+        self.assertTrue(env.fix.startswith("create environment"))
+        self.assertTrue(sweep.fix_lines([env])[0].startswith("# create environment"))
+
+    def test_an_environment_error_other_than_missing_stays_unknown(self):
+        t = good()
+        t[f"/repos/{R}/environments/egress-approval"] = (500, {})
+        self.assertIn(("environment egress-approval", "unknown"), bad(run(t)))
 
 
 class Unknowns(unittest.TestCase):
@@ -144,6 +203,44 @@ class Unknowns(unittest.TestCase):
 
     def test_unreachable_repo_is_one_unknown(self):
         self.assertEqual(bad(run({})), {("repository", "unknown")})
+
+
+class Auth(unittest.TestCase):
+    class Gh:
+        def __init__(self, token="", rc=0):
+            self.token, self.rc, self.calls = token, rc, []
+
+        def __call__(self, argv, **kw):
+            self.calls.append(argv)
+            return type("R", (), {"stdout": self.token + "\n", "returncode": self.rc})()
+
+    def test_the_environment_wins_then_the_gh_login(self):
+        gh = self.Gh("from-gh")
+        self.assertEqual(sweep.resolve_token({"GITHUB_TOKEN": "env1", "GH_TOKEN": "env2"}, gh), "env1")
+        self.assertEqual(sweep.resolve_token({"GH_TOKEN": "env2"}, gh), "env2")
+        self.assertEqual(gh.calls, [])  # gh is not even asked
+        self.assertEqual(sweep.resolve_token({}, gh), "from-gh")
+        self.assertEqual(gh.calls, [["gh", "auth", "token"]])
+
+    def test_no_login_and_no_gh_give_nothing(self):
+        self.assertEqual(sweep.resolve_token({}, self.Gh("", rc=1)), "")
+
+        def missing(*a, **k):
+            raise FileNotFoundError
+
+        self.assertEqual(sweep.resolve_token({}, missing), "")
+
+    def test_fix_commands_run_as_the_gh_login_and_ui_steps_are_comments(self):
+        res = [sweep.Result("r", "a", "fail", "", "gh api -X PATCH repos/r -F x=1"),
+               sweep.Result("r", "b", "fail", "", "gh api -X PUT repos/r/p --input - <<'JSON'\n{}\nJSON"),
+               sweep.Result("r", "c", "warn", "", "set reviewers in Settings, Environments, x"),
+               sweep.Result("r", "d", "ok", "", "gh api never printed"),
+               sweep.Result("r", "a2", "fail", "", "gh api -X PATCH repos/r -F x=1")]  # a duplicate
+        lines = sweep.fix_lines(res)
+        self.assertEqual(lines[0], "env -u GITHUB_TOKEN -u GH_TOKEN gh api -X PATCH repos/r -F x=1")
+        self.assertTrue(lines[1].startswith("env -u GITHUB_TOKEN -u GH_TOKEN gh api -X PUT") and "<<'JSON'" in lines[1])
+        self.assertEqual(lines[2], "# set reviewers in Settings, Environments, x")
+        self.assertEqual(len(lines), 3)
 
 
 class Report(unittest.TestCase):
@@ -161,9 +258,36 @@ class Report(unittest.TestCase):
         text = out.getvalue()
         self.assertEqual(rc, 1)
         self.assertIn("**FAIL** administrators included", text)
-        self.assertIn(f"gh api -X PUT repos/{R}/branches/main/protection", text)
+        self.assertIn(f"env -u GITHUB_TOKEN -u GH_TOKEN gh api -X PUT repos/{R}/branches/main/protection", text)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(sweep.main(["--policy", str(pol)], get=lambda p: good().get(p, (404, {}))), 0)
+
+    def test_progress_goes_to_stderr_and_quiet_turns_it_off(self):
+        import contextlib
+        import io
+        pol = pathlib.Path(tempfile.mkdtemp()) / "p.toml"
+        pol.write_text(f'[[repo]]\nname = "{R}"\nchecks = ["check", "approve"]\n')
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            sweep.main(["--policy", str(pol), "--fix-commands"], get=lambda p: good().get(p, (404, {})))
+        self.assertIn("sweeping 1 repo(s)", err.getvalue())
+        self.assertIn(f"[1/1] {R} .", err.getvalue())
+        self.assertRegex(err.getvalue(), r"\d+ ok, \d+ warn, \d+ to fix \(\d+ API calls, [\d.]+s\)")
+        self.assertNotIn("sweeping", out.getvalue())  # the report and commands stay clean
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            sweep.main(["--policy", str(pol), "--quiet"], get=lambda p: good().get(p, (404, {})))
+        self.assertEqual(err.getvalue(), "")
+
+    def test_a_policy_wide_administrator_overrides_the_repo_owner(self):
+        import contextlib
+        import io
+        pol = pathlib.Path(tempfile.mkdtemp()) / "p.toml"
+        pol.write_text(f'[admin]\nlogin = "pal"\n\n[[repo]]\nname = "{R}"\nchecks = ["check", "approve"]\n')
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = sweep.main(["--policy", str(pol)], get=lambda p: good().get(p, (404, {})))
+        self.assertEqual(rc, 1)
+        self.assertIn("unexpected direct collaborators: ['H3mul']", out.getvalue())
 
     def test_the_shipped_policy_parses_and_names_valid_repos(self):
         import tomllib
