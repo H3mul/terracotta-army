@@ -6,12 +6,19 @@
 #   checks        status checks that must be required on the default branch (at least one if unset)
 #   min_approvals required approving reviews (0 is fine for a solo owner: you cannot approve yourself)
 #   actions       "selected" (default: only listed actions may run) or "any" (accepted, with a warning)
+#   allowed_actions  third-party actions a "selected" repo may run, as `owner/repo@*` patterns; the repo's
+#                 allowlist must equal this list, and every `uses:` in its workflows must match it
+#   pin_actions   true: GitHub must enforce SHA pinning, and an unpinned third-party action fails (else warns)
 #   interaction   public repos: who may open PRs, issues and comments ("collaborators_only")
 #   collaborators extra logins with direct access (the administrator always may)
 #   owners        extra CODEOWNERS owners (the administrator owns everything; no file is needed)
 #   admin         this repo's administrator (default: the policy's, else the repo owner)
 #   environments  environments that must exist with the administrator as a required reviewer
 #   protect_tags  a tag ruleset must exist (release tags)
+
+# [defaults] sets any key below for every repo; a repo's own value wins.
+# [defaults]
+# interaction = "collaborators_only"
 
 # The administrator owns every critical repo, so none needs a CODEOWNERS file; one that exists may
 # name only the administrator and `owners`. Default: each repo's owner. Set it here to override:
@@ -28,10 +35,15 @@ environments = ["egress-approval"]
 name = "H3mul/terracotta-army"
 visibility = "public"
 checks = ["general", "secrets", "integration"]
-actions = "any"   # gitleaks, docker and sigstore actions; pin them by SHA, then switch to "selected"
+allowed_actions = [   # tag-pinned for now; pin by SHA (Renovate can), then set pin_actions = true
+  "astral-sh/setup-uv@*", "docker/build-push-action@*", "docker/login-action@*", "docker/setup-buildx-action@*",
+  "gitleaks/gitleaks-action@*", "sigstore/cosign-installer@*",
+]
 protect_tags = true
 
 [[repo]]
 name = "H3mul/homelab-k3s-flux"
 visibility = "public"
 checks = []       # set the CI check names once the repo has any
+allowed_actions = ["renovatebot/github-action@*"]   # the Renovate workflow; Renovate bumps the SHA itself
+pin_actions = true

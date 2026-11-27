@@ -23,7 +23,7 @@ The **administrator** is the repo owner unless `[admin] login` in `hardening/cri
 | Branch rulesets instead of classic protection | accepted if they require a PR, block force pushes and deletion, and have **no bypass actors** | same guarantees |
 | Auto-merge off | yes | a PR must not merge itself the moment checks pass |
 | Secret scanning and push protection on | yes | a pasted token is stopped before it is public |
-| Actions limited to selected actions | yes (`actions = "any"` is accepted with a warning) | a third-party action runs with the repo's secrets |
+| Actions limited to selected actions plus the policy's `allowed_actions`; workflows use nothing else; third-party ones pinned by SHA (`pin_actions`) | yes (`actions = "any"` is accepted with a warning) | a third-party action runs with the repo's secrets |
 | Workflow token read-only by default; workflows cannot approve PRs | yes | a compromised step cannot write or approve |
 | Fork PR workflows need approval (public repos) | `all_external_contributors` | strangers cannot run code in your CI |
 | **Only members open PRs** (public repos) | interaction limit `collaborators_only` | strangers cannot open PRs, issues or comments; GitHub caps the limit at six months, so the sweep warns two weeks before it lapses and you renew it |
@@ -59,9 +59,14 @@ The list below is the same set in full, for the repo owner (`r` is each critical
     # only members open PRs (GitHub expires it after six months: renew)
     gh api -X PUT repos/$r/interaction-limits -f limit=collaborators_only -f expiry=six_months
 
-    # repos with `actions = "selected"` (ta-policy, homelab-k3s-flux); check they use no third-party action first
+    # every repo: only GitHub's own actions plus the third-party patterns the policy lists (`allowed_actions` in
+    # critical.toml; none for ta-policy, `renovatebot/github-action@*` for the Flux repo). The sweep also reads each
+    # repo's workflows and fails on a `uses:` the list would block, so a new action is a reviewed policy change first.
     gh api -X PUT repos/$r/actions/permissions -F enabled=true -f allowed_actions=selected
-    gh api -X PUT repos/$r/actions/permissions/selected-actions -F github_owned_allowed=true -F verified_allowed=false
+    gh api -X PUT repos/$r/actions/permissions/selected-actions -F github_owned_allowed=true -F verified_allowed=false \
+      -f 'patterns_allowed[]=owner/repo@*'
+    # with `pin_actions = true`: GitHub refuses any action not pinned by commit SHA
+    gh api -X PUT repos/$r/actions/permissions -F enabled=true -f allowed_actions=selected -F sha_pinning_required=true
 
     # branch protection (replaces what is there); contexts are the CI job names
     gh api -X PUT repos/$r/branches/main/protection --input - <<'JSON'

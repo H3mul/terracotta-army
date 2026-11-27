@@ -4,6 +4,10 @@
     sweep.py [--policy hardening/critical.toml] [--report report.md] [--json report.json]
              [--fix-commands] [--quiet]
 
+The policy file is the whole specification: `[defaults]` gives every repo the same keys (a repo's own keys win), so
+`--policy` can point at any set of repos and rules. The baseline's fixed parts (branch protection shape, token
+scopes, interaction limit) live in code; what varies lives in the policy.
+
 The administrator (default: the repo owner; `[admin] login` in the policy overrides it) owns every
 repo: a missing CODEOWNERS file is correct, and one that exists may name only the administrator and the
 `owners` exceptions listed for that repo.
@@ -22,9 +26,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fnmatch
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -37,6 +43,9 @@ from dataclasses import asdict, dataclass
 API = "https://api.github.com"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RENEW_WARN_DAYS = 14
+GITHUB_OWNED = {"actions", "github"}  # what `github_owned_allowed` means
+USES = re.compile(r"""^\s*(?:-\s*)?uses:\s*['"]?([^\s'"#]+)""", re.MULTILINE)
+SHA = re.compile(r"^[0-9a-f]{40}$")
 
 Getter = Callable[[str], tuple[int, object]]
 
@@ -219,13 +228,22 @@ class Sweep:
     def actions(self, info: dict) -> None:
         r, cfg = self.repo, self.cfg
         a = self.call("actions", f"/repos/{r}/actions/permissions")
+        patterns = list(cfg.get("allowed_actions", []))
         if isinstance(a, dict) and a.get("enabled"):
             allowed = a.get("allowed_actions")
             self.add("actions limited", allowed != "all" or cfg.get("actions") == "any",
-                     "any third-party action may run", f"gh api -X PUT repos/{r}/actions/permissions -F enabled=true -f allowed_actions=selected\n"
-                     f"gh api -X PUT repos/{r}/actions/permissions/selected-actions -F github_owned_allowed=true -F verified_allowed=false")
+                     "any third-party action may run", self.selected_fix(patterns, "gh api -X PUT repos/{r}/actions/permissions "
+                     "-F enabled=true -f allowed_actions=selected\n"))
             if allowed == "all" and cfg.get("actions") == "any":
                 self.out.append(Result(r, "actions limited", "warn", "any action may run (accepted in the policy); pin them by SHA"))
+            if allowed == "selected":
+                self.selected(patterns)
+            if cfg.get("pin_actions"):
+                self.add("SHA pinning enforced", bool(a.get("sha_pinning_required")),
+                         "workflows may use an action by tag or branch",
+                         f"gh api -X PUT repos/{r}/actions/permissions -F enabled=true -f allowed_actions={allowed or 'selected'} "
+                         "-F sha_pinning_required=true")
+            self.workflows(patterns, enforce=allowed == "selected")
         w = self.call("actions workflow permissions", f"/repos/{r}/actions/permissions/workflow")
         if isinstance(w, dict):
             self.add("workflow token read-only", w.get("default_workflow_permissions") == "read",
@@ -240,6 +258,65 @@ class Sweep:
                 self.add("fork PR runs need approval", f.get("approval_policy") == "all_external_contributors",
                          f"policy is {f.get('approval_policy')}",
                          f"gh api -X PUT repos/{r}/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors")
+
+    def selected_fix(self, patterns: list[str], head: str = "") -> str:
+        r = self.repo
+        pats = "".join(f" -f 'patterns_allowed[]={x}'" for x in patterns)
+        return (head.format(r=r) + f"gh api -X PUT repos/{r}/actions/permissions/selected-actions "
+                f"-F github_owned_allowed=true -F verified_allowed=false{pats}")
+
+    def selected(self, patterns: list[str]) -> None:
+        """With `selected`: GitHub's own actions yes, marketplace-verified no, third-party exactly the policy's patterns."""
+        s = self.call("allowed actions", f"/repos/{self.repo}/actions/permissions/selected-actions")
+        if not isinstance(s, dict):
+            return
+        fix = self.selected_fix(patterns)
+        self.add("allowed actions", s.get("github_owned_allowed") is True and not s.get("verified_allowed"),
+                 "GitHub's own actions are blocked or every verified creator is allowed", fix)
+        have, want = set(s.get("patterns_allowed") or []), set(patterns)
+        self.add("allowed action patterns", have == want,
+                 f"allowed in the repo but not in the policy: {sorted(have - want)}; in the policy but not the repo: {sorted(want - have)}",
+                 fix)
+
+    def workflows(self, patterns: list[str], enforce: bool) -> None:
+        """Every `uses:` in the repo's workflows: allowed by the policy (or it would fail at run time), third-party ones pinned."""
+        r = self.repo
+        status, listing = self.get(f"/repos/{r}/contents/.github/workflows")
+        if status == 404:
+            return  # no workflows
+        if status != 200 or not isinstance(listing, list):
+            self.unknown("workflow actions", f"GET .github/workflows gave {status}")
+            return
+        blocked: list[str] = []
+        loose: list[str] = []
+        for f in listing:
+            if not str(f.get("name", "")).endswith((".yml", ".yaml")):
+                continue
+            st, body = self.get(f"/repos/{r}/contents/{f['path']}")
+            if st != 200 or not isinstance(body, dict):
+                self.unknown("workflow actions", f"GET {f['path']} gave {st}")
+                continue
+            try:
+                text = base64.b64decode(body.get("content", "")).decode()
+            except (ValueError, UnicodeDecodeError):
+                self.unknown("workflow actions", f"{f['path']} could not be read")
+                continue
+            for use in dict.fromkeys(USES.findall(text)):
+                if use.startswith(("./", "docker://")):
+                    continue
+                name, _, ref = use.partition("@")
+                if name.split("/")[0].lower() in GITHUB_OWNED:
+                    continue
+                if enforce and not any(fnmatch.fnmatchcase(use.lower(), x.lower()) for x in patterns):
+                    blocked.append(f"{f['name']}: {use}")
+                if not SHA.match(ref):
+                    loose.append(f"{f['name']}: {use}")
+        names = sorted({u.split(": ", 1)[1].partition("@")[0] for u in blocked})
+        self.add("workflow actions allowed", not blocked, f"the allowlist would block them at run time: {blocked}",
+                 f"add {', '.join(x + '@*' for x in names)} to `allowed_actions` for {r} in critical.toml (a reviewed change), "
+                 "then run the printed command")
+        self.add("third-party actions pinned", not loose, f"not pinned by SHA: {loose}", "pin each by its commit SHA "
+                 "(Renovate can keep the pins current)", level="fail" if self.cfg.get("pin_actions") else "warn")
 
     def access(self, info: dict) -> None:
         r, cfg = self.repo, self.cfg
@@ -354,11 +431,16 @@ def main(argv: list[str], get: Getter | None = None) -> int:
     a = p.parse_args(argv)
     data = tomllib.loads(a.policy.read_text())
     default_admin = (data.get("admin") or {}).get("login", "")
-    cfgs = [{"admin": default_admin, **c} if default_admin else c for c in data.get("repo", [])]
+    defaults = data.get("defaults") or {}
+    cfgs = [{**({"admin": default_admin} if default_admin else {}), **defaults, **c} for c in data.get("repo", [])]
     if get is None:
         token = resolve_token()
         if not token:
-            print("no token: set GITHUB_TOKEN, or log in with `gh auth login`", file=sys.stderr)
+            msg = ("no token: set GITHUB_TOKEN (in the daily workflow the HARDENING_READ_TOKEN environment secret is "
+                   "missing or empty), or log in with `gh auth login`")
+            print(msg, file=sys.stderr)
+            if a.report:
+                a.report.write_text(f"# Hardening sweep\n\n- **UNKNOWN** {msg}\n")
             return 2
         get = http_get(token)
     results: list[Result] = []
