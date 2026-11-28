@@ -32,7 +32,7 @@ The **administrator** is the repo owner unless `[admin] login` in `hardening/cri
 | Webhooks | none (warn) | each one is a data path out |
 | CODEOWNERS | optional: the administrator owns everything; a file may name only the administrator and the repo's `owners` exceptions | enforcement never depended on the file (code-owner review is not required, since the agent's token acts as the administrator) |
 | Environments named in the policy | exist and have the administrator as a required reviewer | the approval gates are real |
-| Release tags protected (`protect_tags`) | an active tag ruleset (warn) | the images the pods run come from release tags |
+| Release tags protected | the `release` environment with the administrator as reviewer (`environments`), or an active tag ruleset (`protect_tags`, warn) | the images the pods run come from release tags |
 | Visibility | as stated in the policy | a private repo made public by mistake is caught |
 
 Not covered, on purpose: who is a member of the account, two-factor authentication on it (not
@@ -85,8 +85,8 @@ homelab-k3s-flux none yet (`"required_status_checks": null`).
 terracotta-army and the Flux repo once the work in flight is pushed; after that every change is a PR with
 green checks.
 
-Only in the web UI: the `egress-approval` and `hardening-read` environments here, a `v*` tag ruleset on
-terracotta-army (restrict creation, update and deletion), the writer App installed on this repo. Not
+Only in the web UI: the `egress-approval` and `hardening-read` environments here, the `release` environment on
+terracotta-army (you as reviewer, deployment tags `v*`; its `images` job waits on it), the writer App installed on this repo. Not
 visible to the sweep at all: two-factor on the account and which Apps are installed.
 
 ## Running the sweep

@@ -14,7 +14,8 @@
 #   owners        extra CODEOWNERS owners (the administrator owns everything; no file is needed)
 #   admin         this repo's administrator (default: the policy's, else the repo owner)
 #   environments  environments that must exist with the administrator as a required reviewer
-#   protect_tags  a tag ruleset must exist (release tags)
+#   protect_tags  a tag ruleset must exist (release tags); terracotta-army gates releases with the `release`
+#                 environment instead (a ruleset with no bypass also works, but you must lift it to tag)
 
 # [defaults] sets any key below for every repo; a repo's own value wins.
 # [defaults]
@@ -35,11 +36,11 @@ environments = ["egress-approval"]
 name = "H3mul/terracotta-army"
 visibility = "public"
 checks = ["general", "secrets", "integration"]
+environments = ["release"]   # the images job waits on it: the gate on publishing a release
 allowed_actions = [   # tag-pinned for now; pin by SHA (Renovate can), then set pin_actions = true
   "astral-sh/setup-uv@*", "docker/build-push-action@*", "docker/login-action@*", "docker/setup-buildx-action@*",
   "gitleaks/gitleaks-action@*", "sigstore/cosign-installer@*",
 ]
-protect_tags = true
 
 [[repo]]
 name = "H3mul/homelab-k3s-flux"
