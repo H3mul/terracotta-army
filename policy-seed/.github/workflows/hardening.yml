@@ -29,6 +29,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RC: ${{ steps.sweep.outputs.rc }}
         run: |
+          [ -f report.md ] || echo "The sweep did not run to the end (see the run log)." > report.md
           gh label create hardening-drift --color B60205 --description "A critical repo no longer meets the baseline" 2>/dev/null || true
           open="$(gh issue list --label hardening-drift --state open --json number --jq '.[0].number // empty')"
           if [ "$RC" != "0" ]; then

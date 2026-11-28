@@ -9,10 +9,15 @@ One tag releases both images.
    together (`tests/hygiene` fails if they disagree). A bump is a breaking change for old workspaces:
    the broker answers 426 to callers below its minimum.
 3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. CI builds `terracotta-general` and `terracotta-workspace` from the same commit, pushes both to
+4. The `images` job waits on the `release` environment: press **Review deployments** (Actions, the run) as the
+   reviewer. A tag pushed by anyone else, the agent included, stays pending and publishes nothing.
+   One-time setup: create the environment with you as reviewer, "Prevent self-review" off, deployment tags
+   limited to `v*`. A tag on a commit from before the gate existed runs that commit's own workflow, with no gate;
+   that is why step 6 pins by digest and checks the release notes before anything is deployed.
+5. CI builds `terracotta-general` and `terracotta-workspace` from the same commit, pushes both to
    `ghcr.io/<owner>/` with that tag, signs each by digest with cosign (keyless), and creates a GitHub
    release whose notes carry a digests table and the contract version.
-5. In the deployment repo, pin both images by the digests from that table, not by tag.
+6. In the deployment repo, pin both images by the digests from that table, not by tag.
 
 ## Before the first release
 

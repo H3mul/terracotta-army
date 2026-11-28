@@ -39,6 +39,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [general, secrets, integration]
     runs-on: ubuntu-latest
+    # a human presses "Review deployments": the agent's token can push a tag but cannot approve this
+    environment: release
     permissions: { contents: write, packages: write, id-token: write }
     env:
       GENERAL: ghcr.io/${{ github.repository_owner }}/terracotta-general

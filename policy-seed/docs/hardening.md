@@ -23,7 +23,7 @@ The **administrator** is the repo owner unless `[admin] login` in `hardening/cri
 | Branch rulesets instead of classic protection | accepted if they require a PR, block force pushes and deletion, and have **no bypass actors** | same guarantees |
 | Auto-merge off | yes | a PR must not merge itself the moment checks pass |
 | Secret scanning and push protection on | yes | a pasted token is stopped before it is public |
-| Actions limited to selected actions | yes (`actions = "any"` is accepted with a warning) | a third-party action runs with the repo's secrets |
+| Actions limited to selected actions plus the policy's `allowed_actions`; workflows use nothing else; third-party ones pinned by SHA (`pin_actions`) | yes (`actions = "any"` is accepted with a warning) | a third-party action runs with the repo's secrets |
 | Workflow token read-only by default; workflows cannot approve PRs | yes | a compromised step cannot write or approve |
 | Fork PR workflows need approval (public repos) | `all_external_contributors` | strangers cannot run code in your CI |
 | **Only members open PRs** (public repos) | interaction limit `collaborators_only` | strangers cannot open PRs, issues or comments; GitHub caps the limit at six months, so the sweep warns two weeks before it lapses and you renew it |
@@ -32,7 +32,7 @@ The **administrator** is the repo owner unless `[admin] login` in `hardening/cri
 | Webhooks | none (warn) | each one is a data path out |
 | CODEOWNERS | optional: the administrator owns everything; a file may name only the administrator and the repo's `owners` exceptions | enforcement never depended on the file (code-owner review is not required, since the agent's token acts as the administrator) |
 | Environments named in the policy | exist and have the administrator as a required reviewer | the approval gates are real |
-| Release tags protected (`protect_tags`) | an active tag ruleset (warn) | the images the pods run come from release tags |
+| Release tags protected | the `release` environment with the administrator as reviewer (`environments`), or an active tag ruleset (`protect_tags`, warn) | the images the pods run come from release tags |
 | Visibility | as stated in the policy | a private repo made public by mistake is caught |
 
 Not covered, on purpose: who is a member of the account, two-factor authentication on it (not
@@ -59,9 +59,14 @@ The list below is the same set in full, for the repo owner (`r` is each critical
     # only members open PRs (GitHub expires it after six months: renew)
     gh api -X PUT repos/$r/interaction-limits -f limit=collaborators_only -f expiry=six_months
 
-    # repos with `actions = "selected"` (ta-policy, homelab-k3s-flux); check they use no third-party action first
+    # every repo: only GitHub's own actions plus the third-party patterns the policy lists (`allowed_actions` in
+    # critical.toml; none for ta-policy, `renovatebot/github-action@*` for the Flux repo). The sweep also reads each
+    # repo's workflows and fails on a `uses:` the list would block, so a new action is a reviewed policy change first.
     gh api -X PUT repos/$r/actions/permissions -F enabled=true -f allowed_actions=selected
-    gh api -X PUT repos/$r/actions/permissions/selected-actions -F github_owned_allowed=true -F verified_allowed=false
+    gh api -X PUT repos/$r/actions/permissions/selected-actions -F github_owned_allowed=true -F verified_allowed=false \
+      -f 'patterns_allowed[]=owner/repo@*'
+    # with `pin_actions = true`: GitHub refuses any action not pinned by commit SHA
+    gh api -X PUT repos/$r/actions/permissions -F enabled=true -f allowed_actions=selected -F sha_pinning_required=true
 
     # branch protection (replaces what is there); contexts are the CI job names
     gh api -X PUT repos/$r/branches/main/protection --input - <<'JSON'
@@ -80,8 +85,8 @@ homelab-k3s-flux none yet (`"required_status_checks": null`).
 terracotta-army and the Flux repo once the work in flight is pushed; after that every change is a PR with
 green checks.
 
-Only in the web UI: the `egress-approval` and `hardening-read` environments here, a `v*` tag ruleset on
-terracotta-army (restrict creation, update and deletion), the writer App installed on this repo. Not
+Only in the web UI: the `egress-approval` and `hardening-read` environments here, the `release` environment on
+terracotta-army (you as reviewer, deployment tags `v*`; its `images` job waits on it), the writer App installed on this repo. Not
 visible to the sweep at all: two-factor on the account and which Apps are installed.
 
 ## Running the sweep

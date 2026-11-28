@@ -32,6 +32,9 @@ def good() -> dict:
             "enforce_admins": {"enabled": True}, "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False}, "required_conversation_resolution": {"enabled": True}}),
         f"/repos/{R}/actions/permissions": (200, {"enabled": True, "allowed_actions": "selected"}),
+        f"/repos/{R}/actions/permissions/selected-actions": (200, {"github_owned_allowed": True, "verified_allowed": False,
+                                                                   "patterns_allowed": []}),
+        f"/repos/{R}/contents/.github/workflows": (404, {}),
         f"/repos/{R}/actions/permissions/workflow": (200, {"default_workflow_permissions": "read",
                                                            "can_approve_pull_request_reviews": False}),
         f"/repos/{R}/actions/permissions/fork-pr-contributor-approval": (200, {"approval_policy": "all_external_contributors"}),
@@ -101,6 +104,55 @@ class Baseline(unittest.TestCase):
                       ("actions cannot approve PRs", "fail"))
         self.break_it(f"/repos/{R}/actions/permissions/fork-pr-contributor-approval",
                       lambda b: b.update(approval_policy="first_time_contributors"), ("fork PR runs need approval", "fail"))
+
+    def workflow_files(self, **files):
+        t = good()
+        t[f"/repos/{R}/contents/.github/workflows"] = (200, [{"name": n, "path": f".github/workflows/{n}"} for n in files])
+        for n, text in files.items():
+            t[f"/repos/{R}/contents/.github/workflows/{n}"] = (200, {"content": base64.b64encode(text.encode()).decode()})
+        return t
+
+    RENOVATE = "jobs:\n  r:\n    steps:\n      - uses: actions/checkout@v4\n      - uses: renovatebot/github-action@" + "a" * 40 + "\n"
+
+    def test_a_workflow_action_the_allowlist_blocks_is_caught_before_it_fails_at_run_time(self):
+        t = self.workflow_files(**{"renovate.yaml": self.RENOVATE})
+        got = bad(run(t))
+        self.assertIn(("workflow actions allowed", "fail"), got)
+        self.assertNotIn(("third-party actions pinned", "warn"), got)  # pinned by SHA
+        # the policy allows it, and the repo's allowlist matches the policy
+        cfg = {**CFG, "allowed_actions": ["renovatebot/github-action@*"]}
+        t[f"/repos/{R}/actions/permissions/selected-actions"] = (200, {"github_owned_allowed": True, "verified_allowed": False,
+                                                                       "patterns_allowed": ["renovatebot/github-action@*"]})
+        self.assertEqual(bad(run(t, cfg)), set())
+
+    def test_the_allowlist_must_equal_the_policy_both_ways(self):
+        cfg = {**CFG, "allowed_actions": ["renovatebot/github-action@*"]}
+        self.assertIn(("allowed action patterns", "fail"), bad(run(good(), cfg)))  # repo lacks it
+        t = good()
+        t[f"/repos/{R}/actions/permissions/selected-actions"] = (200, {"github_owned_allowed": True, "verified_allowed": False,
+                                                                       "patterns_allowed": ["evil/*"]})
+        self.assertIn(("allowed action patterns", "fail"), bad(run(t)))  # repo has more than the policy
+        t[f"/repos/{R}/actions/permissions/selected-actions"] = (200, {"github_owned_allowed": True, "verified_allowed": True,
+                                                                       "patterns_allowed": []})
+        self.assertIn(("allowed actions", "fail"), bad(run(t)))
+
+    def test_unpinned_third_party_actions_warn_and_fail_when_the_policy_pins(self):
+        t = self.workflow_files(**{"ci.yml": "steps:\n  - uses: docker/build-push-action@v6\n  - uses: actions/checkout@v4\n"})
+        cfg = {**CFG, "allowed_actions": ["docker/*@*"]}
+        t[f"/repos/{R}/actions/permissions/selected-actions"] = (200, {"github_owned_allowed": True, "verified_allowed": False,
+                                                                       "patterns_allowed": ["docker/*@*"]})
+        self.assertEqual(bad(run(t, cfg)), {("third-party actions pinned", "warn")})
+        t[f"/repos/{R}/actions/permissions"] = (200, {"enabled": True, "allowed_actions": "selected", "sha_pinning_required": True})
+        got = bad(run(t, {**cfg, "pin_actions": True}))
+        self.assertEqual(got, {("third-party actions pinned", "fail")})
+        t[f"/repos/{R}/actions/permissions"] = (200, {"enabled": True, "allowed_actions": "selected"})
+        self.assertIn(("SHA pinning enforced", "fail"), bad(run(t, {**cfg, "pin_actions": True})))
+
+    def test_any_mode_still_warns_about_unpinned_actions_but_blocks_nothing(self):
+        t = self.workflow_files(**{"ci.yml": "steps:\n  - uses: docker/build-push-action@v6\n"})
+        t[f"/repos/{R}/actions/permissions"] = (200, {"enabled": True, "allowed_actions": "all"})
+        got = bad(run(t, {**CFG, "actions": "any"}))
+        self.assertEqual(got, {("actions limited", "warn"), ("third-party actions pinned", "warn")})
 
     def test_any_action_is_accepted_with_a_warning_when_the_policy_says_so(self):
         t = good()
@@ -288,6 +340,39 @@ class Report(unittest.TestCase):
             rc = sweep.main(["--policy", str(pol)], get=lambda p: good().get(p, (404, {})))
         self.assertEqual(rc, 1)
         self.assertIn("unexpected direct collaborators: ['H3mul']", out.getvalue())
+
+    def test_defaults_apply_to_every_repo_and_a_repo_overrides_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            pol = pathlib.Path(d) / "p.toml"
+            pol.write_text('[defaults]\nallowed_actions = ["a/b@*"]\nvisibility = "public"\n'
+                           '[[repo]]\nname = "o/one"\n[[repo]]\nname = "o/two"\nvisibility = "private"\n')
+            seen = []
+
+            class Spy:
+                def __init__(self, get, cfg, now=None):
+                    seen.append(cfg)
+
+                def run(self):
+                    return []
+
+            real, sweep.Sweep = sweep.Sweep, Spy
+            try:
+                sweep.main(["--policy", str(pol), "--quiet"], get=lambda p: (404, {}))
+            finally:
+                sweep.Sweep = real
+        self.assertEqual([c["allowed_actions"] for c in seen], [["a/b@*"], ["a/b@*"]])
+        self.assertEqual([c["visibility"] for c in seen], ["public", "private"])
+
+    def test_no_token_still_writes_the_report_the_workflow_reads(self):
+        with tempfile.TemporaryDirectory() as d:
+            rep = pathlib.Path(d) / "r.md"
+            real, sweep.resolve_token = sweep.resolve_token, lambda *a, **k: ""
+            try:
+                rc = sweep.main(["--report", str(rep), "--quiet"])
+            finally:
+                sweep.resolve_token = real
+            self.assertEqual(rc, 2)
+            self.assertIn("HARDENING_READ_TOKEN", rep.read_text())
 
     def test_the_shipped_policy_parses_and_names_valid_repos(self):
         import tomllib
